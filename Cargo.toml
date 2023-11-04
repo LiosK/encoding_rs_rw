@@ -1,0 +1,11 @@
+[package]
+name = "encoding_rs_rw"
+version = "0.1.0"
+authors = ["LiosK <contact@mail.liosk.net>"]
+license = "Apache-2.0"
+edition = "2021"
+description = "encoding_rs reader/writer"
+repository = "https://github.com/LiosK/encoding_rs_rw"
+
+[dependencies]
+encoding_rs = "0.8"
