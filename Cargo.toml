@@ -4,8 +4,15 @@ version = "0.1.0"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2021"
-description = "encoding_rs reader/writer"
+description = "std::io::{Read, Write} wrappers for encoding_rs"
 repository = "https://github.com/LiosK/encoding_rs_rw"
+keywords = ["encoding", "unicode", "charset", "io"]
+categories = [
+  "api-bindings",
+  "encoding",
+  "internationalization",
+  "text-processing",
+]
 
 [dependencies]
 encoding_rs = "0.8"

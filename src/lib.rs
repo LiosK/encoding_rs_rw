@@ -1,6 +1,6 @@
 //! This crate provides [`std::io::Read`] and [`std::io::Write`] implementations for
-//! [`encoding_rs::Decoder`] and [`encoding_rs::Encoder`] to support Rust's standard
-//! streaming API.
+//! [`encoding_rs::Decoder`] and [`encoding_rs::Encoder`], respectively, to support
+//! Rust's standard streaming API.
 //!
 //! ```rust
 //! use std::io::prelude::*;
