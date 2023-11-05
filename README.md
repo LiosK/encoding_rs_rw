@@ -1,11 +1,11 @@
-# encoding_rs_rw: encoding_rs reader/writer
+# std::io::{Read, Write} wrappers for encoding_rs
 
 [![Crates.io](https://img.shields.io/crates/v/encoding_rs_rw)](https://crates.io/crates/encoding_rs_rw)
 [![License](https://img.shields.io/crates/l/encoding_rs_rw)](https://github.com/LiosK/encoding_rs_rw/blob/main/LICENSE)
 
 This crate provides `std::io::Read` and `std::io::Write` implementations for
-`encoding_rs::Decoder` and `encoding_rs::Encoder` to support Rust's standard
-streaming API.
+`encoding_rs::Decoder` and `encoding_rs::Encoder`, respectively, to support
+Rust's standard streaming API.
 
 ```rust
 use std::io::prelude::*;

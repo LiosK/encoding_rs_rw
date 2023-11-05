@@ -29,7 +29,7 @@ use std::{error, fmt, io};
 /// let mut dst = String::new();
 /// while let Err(io_error) = reader.read_to_string(&mut dst) {
 ///     if MalformedError::wrapped_in(&io_error).is_some() {
-///         // insert replacement character (U+FFED) and continue
+///         // insert replacement character (U+FFFD) and continue
 ///         dst.push('�');
 ///     } else {
 ///         panic!("found other error than MalformedError: {}", io_error);

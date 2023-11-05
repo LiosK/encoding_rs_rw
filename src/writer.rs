@@ -148,6 +148,11 @@ impl<W: io::Write> EncodingWriter<W> {
     /// argument instead of a byte slice, eliminating the UTF-8 validation of the input.
     ///
     /// See the type-level documentation for the error semantics.
+    ///
+    /// This method is a low-level call primarily meant for a loop handling [`UnmappableError`] in
+    /// a desired manner. See the `UnmappableError` documentation for usage examples. Where
+    /// `UnmappableError` is unlikely or is not to be recovered, [`std::write!`] macro is the
+    /// primary option because `write_fmt` under the hood also skips the UTF-8 validation.
     pub fn write_str(&mut self, buf: &str) -> io::Result<usize> {
         if buf.is_empty() {
             // `io::Write` may return `Ok(0)` if input buffer is 0 bytes in length
@@ -158,11 +163,30 @@ impl<W: io::Write> EncodingWriter<W> {
         Ok(self.write_str_inner(buf))
     }
 
-    /// Returns a new writer type that write an encoded byte sequence into this encoding writer,
-    /// bypassing the underlying encoder.
+    /// Returns a new writer that writes encoded bytes into this encoding writer, bypassing the
+    /// underlying encoder.
+    ///
+    /// The caller must ensure that the bytes written are a valid byte sequence in the destination
+    /// encoding, as this writer does not validate or transform the input byte sequence.
     ///
     /// See the type-level documentation for the error semantics of the writer methods provided by
     /// the returned writer.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::io::Write as _;
+    ///
+    /// use encoding_rs::ISO_8859_2;
+    /// use encoding_rs_rw::EncodingWriter;
+    ///
+    /// let mut writer = EncodingWriter::new(Vec::new(), ISO_8859_2.new_encoder());
+    /// // ASCII bytes are valid as ISO/IEC 8859-2 (a.k.a. Latin-2), too.
+    /// write!(writer.passthrough(), r"\U{:08X}", u32::from('😂'))?;
+    /// writer.flush()?;
+    /// assert_eq!(writer.writer_ref(), br"\U0001F602");
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn passthrough(&mut self) -> impl io::Write + '_ {
         PassthroughWriter(self)
     }
