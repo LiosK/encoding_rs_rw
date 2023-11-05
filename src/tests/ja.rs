@@ -19,6 +19,24 @@ fn reader_high_level_api() {
     });
 }
 
+/// Tests the lossy reader's high level API usage.
+#[test]
+fn lossy_reader_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader =
+                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+            {
+                let mut reader = reader.lossy();
+                let mut dst = String::new();
+                reader.read_to_string(&mut dst).unwrap();
+                assert_eq!(dst, c.decoded());
+            }
+            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+        }
+    });
+}
+
 /// Tests the writer's high level API usage.
 #[test]
 fn writer_high_level_api() {
@@ -52,6 +70,33 @@ fn reader_byte_by_byte() {
                 }
             }
             assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
+            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+        }
+    });
+}
+
+/// Tests the lossy reader for byte-by-byte streaming.
+#[test]
+fn lossy_reader_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader = DecodingReader::new(
+                io::BufReader::with_capacity(1, c.encoded()),
+                c.encoding.new_decoder(),
+            );
+            {
+                let mut reader = reader.lossy();
+                let mut dst = Vec::with_capacity(c.decoded().len());
+                let mut buf = [0u8; 1];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => dst.extend(&buf[..n]),
+                        ret => panic!("assertion failed: {:?}", ret),
+                    }
+                }
+                assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
+            }
             assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
         }
     });
@@ -108,6 +153,44 @@ fn reader_malformed_bytes() {
                             }
                         }
                         assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
+                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+                        dst
+                    };
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    });
+}
+
+/// Emulates the replacement behavior of `encoding_rs::Decoder`.
+#[test]
+fn lossy_reader_malformed_bytes() {
+    TEST_CASES.with(|cs| {
+        for a in cs {
+            for b in cs {
+                // ISO_2022_JP is 7-bit encoding and is indistinguishable from ASCII
+                if a.encoding != b.encoding && b.encoding != ISO_2022_JP {
+                    let expected = {
+                        let mut decoder = a.encoding.new_decoder();
+                        let mut dst = String::with_capacity(
+                            decoder.max_utf8_buffer_length(b.encoded().len()).unwrap(),
+                        );
+                        let (result, consumed, replaced) =
+                            decoder.decode_to_string(b.encoded(), &mut dst, true);
+                        assert_eq!(result, encoding_rs::CoderResult::InputEmpty);
+                        assert_eq!(consumed, b.encoded().len());
+                        assert!(replaced);
+                        dst
+                    };
+                    let actual = {
+                        let mut reader = DecodingReader::new(b.encoded(), a.encoding.new_decoder());
+                        let mut dst = String::new();
+                        {
+                            let mut reader = reader.lossy();
+                            reader.read_to_string(&mut dst).unwrap();
+                            assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
+                        }
                         assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         dst
                     };

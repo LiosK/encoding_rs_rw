@@ -25,6 +25,9 @@ use super::MalformedError;
 /// might produce. Call [`finish`](DecodingReader::finish) explicitly to let the decoder know the
 /// end of the stream, and it will return `MalformedError`, if any, found at the end of the stream.
 ///
+/// See [`DecodingReader::lossy`] for a variant of this reader that handles `MalformedError`s
+/// automatically.
+///
 /// # Examples
 ///
 /// ```rust
@@ -115,6 +118,37 @@ impl<R: io::BufRead> DecodingReader<R> {
         )
     }
 
+    /// Returns a variant of this decoding reader that replaces a detected malformed byte sequence
+    /// with a replacement character (U+FFFD) instead of reporting a `MalformedError`.
+    ///
+    /// The returned reader has the same UTF-8 validity guarantee and error semantics as those of
+    /// [`DecodingReader`], except that it does not report `MalformedError`.
+    ///
+    /// The returned reader does not replace an incomplete character fragment at the end of the
+    /// input stream. The caller must handle such a fragment manually through [`finish`].
+    ///
+    /// [`finish`]: DecodingReader::finish
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::io::Read as _;
+    ///
+    /// use encoding_rs::EUC_JP;
+    /// use encoding_rs_rw::DecodingReader;
+    ///
+    /// let src: &[u8] = &[182, 229, 187, 0xff, 176, 236, 192, 184];
+    /// let mut reader = DecodingReader::new(src, EUC_JP.new_decoder());
+    ///
+    /// let mut dst = String::new();
+    /// reader.lossy().read_to_string(&mut dst)?;
+    /// assert_eq!(dst, "九�一生");
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn lossy(&mut self) -> impl io::Read + '_ {
+        LossyReader(self)
+    }
+
     fn read_inner(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.fallback_buf.is_empty());
@@ -196,23 +230,10 @@ impl<R: io::BufRead> io::Read for DecodingReader<R> {
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         // This method skips the UTF-8 validation of the output based on `Decoder`'s guarantee. It
-        // delegates to the default `read_to_end` while using `PanicGuard` to make sure that
-        // `Vec`'s `len` is reset to a place up to which UTF-8 validity is confirmed.
+        // delegates to the default `read_to_end` while using `PanicGuard` to make sure that the
+        // inner `Vec`'s `len` is reset to the place up to which UTF-8 validity is confirmed.
         //
         // See also https://github.com/rust-lang/rust/blob/1.73.0/library/std/src/io/mod.rs#L432
-        struct PanicGuard<'a> {
-            len: usize,
-            inner: &'a mut Vec<u8>,
-        }
-
-        impl Drop for PanicGuard<'_> {
-            fn drop(&mut self) {
-                unsafe {
-                    self.inner.set_len(self.len);
-                }
-            }
-        }
-
         let mut g = PanicGuard {
             len: buf.len(),
             inner: unsafe { buf.as_mut_vec() },
@@ -229,6 +250,79 @@ impl<R: io::BufRead> io::Read for DecodingReader<R> {
                 io::ErrorKind::Other,
                 "failed to read to string unexpectedly",
             ))
+        }
+    }
+}
+
+/// The reader type returned by [`DecodingReader::lossy`].
+struct LossyReader<'a, R>(&'a mut DecodingReader<R>);
+
+impl<R: io::BufRead> io::Read for LossyReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        const REPL: &[u8] = "\u{FFFD}".as_bytes();
+        if buf.is_empty() {
+            return Ok(0);
+        } else if !self.0.fallback_buf.is_empty() {
+            return Ok(self.0.fallback_buf.read_at_least_one_byte(buf));
+        } else if self.0.deferred_error.take().is_some() {
+            // write REPLACEMENT CHARACTER and return early because `read_inner` called later may
+            // return `Err` originated from `BufRead::fill_buf`
+            return if buf.len() >= REPL.len() {
+                buf[..REPL.len()].copy_from_slice(REPL);
+                Ok(REPL.len())
+            } else {
+                self.0.fallback_buf.fill_from_slice(REPL);
+                Ok(self.0.fallback_buf.read_at_least_one_byte(buf))
+            };
+        }
+
+        let mut n = self.0.read_inner(buf)?;
+        if self.0.deferred_error.is_some() {
+            if buf.len() - n >= REPL.len() {
+                self.0.deferred_error = None;
+                buf[n..n + REPL.len()].copy_from_slice(REPL);
+                n += REPL.len();
+            } else if n == 0 {
+                self.0.deferred_error = None;
+                self.0.fallback_buf.fill_from_slice(REPL);
+                n += self.0.fallback_buf.read_at_least_one_byte(buf);
+            }
+        }
+        Ok(n)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        let mut g = PanicGuard {
+            len: buf.len(),
+            inner: unsafe { buf.as_mut_vec() },
+        };
+
+        let ret = self.read_to_end(g.inner);
+        if self.0.has_read_valid_utf8() {
+            g.len = g.inner.len();
+            ret
+        } else {
+            ret?;
+            debug_assert!(false, "unreachable");
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to read to string unexpectedly",
+            ))
+        }
+    }
+}
+
+/// A panic guard structure used by specialized `read_to_string` implementations to ensure that the
+/// inner `Vec`'s `len` is reset to the place up to which UTF-8 validity is confirmed.
+struct PanicGuard<'a> {
+    len: usize,
+    inner: &'a mut Vec<u8>,
+}
+
+impl Drop for PanicGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.inner.set_len(self.len);
         }
     }
 }
@@ -265,6 +359,21 @@ mod tests {
         assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
         assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
         assert_eq!(dst, "hello");
+        assert!(match reader.finish() {
+            (_, v, Err(e)) => v.is_empty() && MalformedError::wrapped_in(&e).is_some(),
+            _ => false,
+        });
+
+        let mut reader = DecodingReader::new(
+            &[b'h', b'e', b'l', b'l', b'o', 0xe0][..],
+            encoding_rs::SHIFT_JIS.new_decoder(),
+        );
+        {
+            let mut reader = reader.lossy();
+            let mut dst = String::new();
+            assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
+            assert_eq!(dst, "hello");
+        }
         assert!(match reader.finish() {
             (_, v, Err(e)) => v.is_empty() && MalformedError::wrapped_in(&e).is_some(),
             _ => false,
