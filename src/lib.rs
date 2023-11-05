@@ -29,6 +29,8 @@
 //!
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod error;
 mod reader;
 mod writer;
