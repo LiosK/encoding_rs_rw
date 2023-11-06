@@ -41,6 +41,10 @@ pub use error::{MalformedError, UnmappableError};
 pub use reader::DecodingReader;
 pub use writer::EncodingWriter;
 
+#[cfg(feature = "unstable")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+pub use writer::PassthroughWriter;
+
 #[cfg(test)]
 mod tests {
     mod ja;

@@ -280,6 +280,61 @@ fn writer_unmappable_char() {
         assert_eq!(actual_byte_by_byte, expected);
     }
 }
+/// Emulates the replacement behavior of `encoding_rs::Encoder`.
+#[cfg(feature = "unstable")]
+#[test]
+fn writer_unmappable_char_with_handler() {
+    for encoding in [BIG5, EUC_KR, ISO_8859_15] {
+        let expected = {
+            let mut encoder = encoding.new_encoder();
+            let mut dst = Vec::with_capacity(
+                encoder
+                    .max_buffer_length_from_utf8_if_no_unmappables(TEXT.len())
+                    .unwrap()
+                    * 4,
+            );
+            let (result, consumed, replaced) =
+                encoder.encode_from_utf8_to_vec(TEXT, &mut dst, true);
+            assert_eq!(result, encoding_rs::CoderResult::InputEmpty);
+            assert_eq!(consumed, TEXT.len());
+            assert!(replaced);
+            dst
+        };
+
+        let actual_handler = {
+            let src = TEXT;
+            let mut writer = EncodingWriter::new(Vec::new(), encoding.new_encoder());
+            {
+                let mut writer =
+                    writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c)));
+                write!(writer, "{}", src).unwrap();
+                writer.flush().unwrap();
+            }
+            let (dst, _, _) = writer.finish();
+            dst
+        };
+        assert_eq!(actual_handler, expected);
+
+        let actual_handler_byte_by_byte = {
+            let mut src = TEXT.as_bytes();
+            let mut writer = EncodingWriter::new(Vec::new(), encoding.new_encoder());
+            {
+                let mut writer =
+                    writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c)));
+                while !src.is_empty() {
+                    match writer.write(&src[..1]) {
+                        Ok(1) => src = &src[1..],
+                        _ => unreachable!(),
+                    }
+                }
+                writer.flush().unwrap();
+            }
+            let (dst, _, _) = writer.finish();
+            dst
+        };
+        assert_eq!(actual_handler_byte_by_byte, expected);
+    }
+}
 
 static TEXT: &str = include_str!("text_ja.txt");
 

@@ -191,6 +191,16 @@ impl<W: io::Write> EncodingWriter<W> {
         PassthroughWriter(self)
     }
 
+    /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
+    #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+    pub fn with_unmappable_handler<'a>(
+        &'a mut self,
+        handler: impl FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
+    ) -> impl io::Write + 'a {
+        WithUnmappableHandlerWriter(self, handler)
+    }
+
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
@@ -348,8 +358,8 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
         // This method essentially combines `write_all` and `write_fmt` default implementations of
         // `io::Write`, while using `write_str` to eliminate the UTF-8 validation.
-        struct FmtWriter<'w, W: io::Write> {
-            inner: &'w mut EncodingWriter<W>,
+        struct FmtWriter<'a, W: io::Write> {
+            inner: &'a mut EncodingWriter<W>,
             io_error: io::Result<()>,
         }
 
@@ -434,7 +444,7 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
 
 /// The writer type returned by [`EncodingWriter::passthrough`].
 #[derive(Debug)]
-struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
+pub struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
 
 impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -463,6 +473,54 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
             }
             Ok(buf.len())
         }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+#[cfg(feature = "unstable")]
+struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
+
+#[cfg(feature = "unstable")]
+impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
+where
+    H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+{
+    fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
+        if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
+            let value = match self.0.deferred_error.take() {
+                Some(DefErr::Unmappable(e)) => e.value(),
+                _ => unreachable!(),
+            };
+            (self.1)(value, &mut PassthroughWriter(self.0))?;
+        }
+        Ok(())
+    }
+
+    fn _write_str(&mut self, buf: &str) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.handle_any_unmappable_error()?;
+        self.0.return_any_deferred_error()?;
+        self.0.reserve_buffer_capacity(MIN_BUF_SIZE)?;
+        Ok(self.0.write_str_inner(buf))
+    }
+}
+
+#[cfg(feature = "unstable")]
+impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
+where
+    H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.handle_any_unmappable_error()?;
+        self.0.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
