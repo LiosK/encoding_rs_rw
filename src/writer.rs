@@ -651,5 +651,21 @@ mod tests {
             Err(e) => MalformedError::wrapped_in(&e).is_some(),
             _ => false,
         });
+
+        #[cfg(feature = "unstable")]
+        {
+            let mut writer =
+                EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
+            assert!(matches!(
+                writer
+                    .with_unmappable_handler(|_, _| unreachable!())
+                    .write(&[0xc3]),
+                Ok(1)
+            ));
+            assert!(match writer.flush() {
+                Err(e) => MalformedError::wrapped_in(&e).is_some(),
+                _ => false,
+            });
+        }
     }
 }
