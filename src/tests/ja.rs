@@ -269,7 +269,7 @@ fn writer_unmappable_char() {
     });
 }
 /// Emulates the replacement behavior of `encoding_rs::Encoder`.
-#[cfg(feature = "unstable")]
+#[cfg(feature = "unstable-handler")]
 #[test]
 fn writer_unmappable_char_with_handler() {
     TEST_CASES_UNMAPPABLE.with(|cs| {

@@ -192,8 +192,8 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 
     /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
-    #[cfg(feature = "unstable")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+    #[cfg(feature = "unstable-handler")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
     pub fn with_unmappable_handler<'a>(
         &'a mut self,
         handler: impl FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
@@ -652,7 +652,7 @@ mod tests {
             _ => false,
         });
 
-        #[cfg(feature = "unstable")]
+        #[cfg(feature = "unstable-handler")]
         {
             let mut writer =
                 EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
