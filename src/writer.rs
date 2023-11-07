@@ -198,6 +198,60 @@ impl<W: io::Write> EncodingWriter<W> {
         &'a mut self,
         handler: impl FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
     ) -> impl io::Write + 'a {
+        struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
+
+        impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
+                if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
+                    let value = match self.0.deferred_error.take() {
+                        Some(DefErr::Unmappable(e)) => e.value(),
+                        _ => unreachable!(),
+                    };
+                    (self.1)(value, &mut PassthroughWriter(self.0))?;
+                }
+                Ok(())
+            }
+        }
+
+        impl<W: io::Write, H> WriteFmtAdapter for WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                self.handle_any_unmappable_error()?;
+                self.0.return_any_deferred_error()?;
+                self.0.reserve_buffer_capacity(MIN_BUF_SIZE)?;
+                Ok(self.0.write_str_inner(buf))
+            }
+        }
+
+        impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                self.handle_any_unmappable_error()?;
+                self.0.write(buf)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.flush()
+            }
+
+            fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
+                write_fmt_impl(self, f)
+            }
+        }
+
         WithUnmappableHandlerWriter(self, handler)
     }
 
@@ -290,6 +344,12 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 }
 
+impl<W: io::Write> WriteFmtAdapter for EncodingWriter<W> {
+    fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
+        self.write_str(buf)
+    }
+}
+
 impl<W: io::Write> io::Write for EncodingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
@@ -356,63 +416,7 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
     }
 
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
-        // This method essentially combines `write_all` and `write_fmt` default implementations of
-        // `io::Write`, while using `write_str` to eliminate the UTF-8 validation.
-        struct FmtWriter<'a, W: io::Write> {
-            inner: &'a mut EncodingWriter<W>,
-            io_error: io::Result<()>,
-        }
-
-        impl<W: io::Write> fmt::Write for FmtWriter<'_, W> {
-            fn write_str(&mut self, mut s: &str) -> fmt::Result {
-                while !s.is_empty() {
-                    match self.inner.write_str(s) {
-                        Ok(0) => {
-                            self.io_error = Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "failed to write whole buffer",
-                            ));
-                            return Err(fmt::Error);
-                        }
-                        Ok(n) => {
-                            s = match s.get(n..) {
-                                Some(t) => t,
-                                None => {
-                                    debug_assert!(false, "unreachable");
-                                    self.io_error = Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        "encoder returned invalid string index",
-                                    ));
-                                    return Err(fmt::Error);
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                        Err(e) => {
-                            self.io_error = Err(e);
-                            return Err(fmt::Error);
-                        }
-                    }
-                }
-                Ok(())
-            }
-        }
-
-        let mut output = FmtWriter {
-            inner: self,
-            io_error: Ok(()),
-        };
-
-        match fmt::write(&mut output, f) {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                if output.io_error.is_err() {
-                    output.io_error
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
-                }
-            }
-        }
+        write_fmt_impl(self, f)
     }
 }
 
@@ -456,7 +460,7 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
         self.0.reserve_buffer_capacity(buf.len())?;
 
         if buf.len() > self.0.encoded_buf.capacity() {
-            // bypass internal buffer
+            // bypass internal buffer if input buffer is large
             assert!(self.0.encoded_buf.is_empty());
             self.0.writer_panicked = true;
             let ret = self.0.writer.write(buf);
@@ -480,51 +484,70 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
     }
 }
 
-#[cfg(feature = "unstable")]
-struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
-
-#[cfg(feature = "unstable")]
-impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
-where
-    H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
-{
-    fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
-        if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
-            let value = match self.0.deferred_error.take() {
-                Some(DefErr::Unmappable(e)) => e.value(),
-                _ => unreachable!(),
-            };
-            (self.1)(value, &mut PassthroughWriter(self.0))?;
-        }
-        Ok(())
-    }
-
-    fn _write_str(&mut self, buf: &str) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        self.handle_any_unmappable_error()?;
-        self.0.return_any_deferred_error()?;
-        self.0.reserve_buffer_capacity(MIN_BUF_SIZE)?;
-        Ok(self.0.write_str_inner(buf))
-    }
+trait WriteFmtAdapter {
+    /// Writes a string slice just like [`std::fmt::Write::write_str`] but returns a result just
+    /// like [`std::io::Write::write`].
+    fn write_str_io(&mut self, buf: &str) -> io::Result<usize>;
 }
 
-#[cfg(feature = "unstable")]
-impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
-where
-    H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
-{
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        self.handle_any_unmappable_error()?;
-        self.0.write(buf)
+/// Implements [`std::io::Write::write_fmt`].
+///
+/// This function essentially combines the default `write_all` and `write_fmt` implementations of
+/// `std::io::Write`, while using `write_str` to eliminate the UTF-8 validation.
+fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> io::Result<()> {
+    struct FmtWriter<'a, T> {
+        inner: &'a mut T,
+        io_error: io::Result<()>,
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+    impl<T: WriteFmtAdapter> fmt::Write for FmtWriter<'_, T> {
+        fn write_str(&mut self, mut s: &str) -> fmt::Result {
+            while !s.is_empty() {
+                match self.inner.write_str_io(s) {
+                    Ok(0) => {
+                        self.io_error = Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "failed to write whole buffer",
+                        ));
+                        return Err(fmt::Error);
+                    }
+                    Ok(n) => {
+                        s = match s.get(n..) {
+                            Some(t) => t,
+                            None => {
+                                debug_assert!(false, "unreachable");
+                                self.io_error = Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    "encoder returned invalid string index",
+                                ));
+                                return Err(fmt::Error);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        self.io_error = Err(e);
+                        return Err(fmt::Error);
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut output = FmtWriter {
+        inner: writer,
+        io_error: Ok(()),
+    };
+    match fmt::write(&mut output, f) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            if output.io_error.is_err() {
+                output.io_error
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
+            }
+        }
     }
 }
 
