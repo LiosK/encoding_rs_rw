@@ -192,6 +192,39 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 
     /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
+    ///
+    /// For each unmappable character encountered, the handler is called with two arguments: the
+    /// unmappable character and a writer created by [`passthrough`](Self::passthrough) so that the
+    /// handler can translate an unmappable character into a desired byte sequence in the
+    /// destination encoding. The `Err` returned by the handler is rethrown to the caller of a
+    /// writer method.
+    ///
+    /// The handler must ensure that the bytes written into the supplied writer are a valid byte
+    /// sequence in the destination encoding, as the `passthrough` writer does not validate or
+    /// transform the input byte sequence.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "unstable-handler")]
+    /// # {
+    /// use std::io::Write as _;
+    ///
+    /// use encoding_rs::ISO_8859_7; // a.k.a. Latin/Greek
+    /// use encoding_rs_rw::EncodingWriter;
+    ///
+    /// let mut writer = EncodingWriter::new(Vec::new(), ISO_8859_7.new_encoder());
+    ///
+    /// write!(
+    ///     writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c))),
+    ///     "👻 Boo!"
+    /// )?;
+    /// writer.flush()?;
+    ///
+    /// assert_eq!(writer.writer_ref(), b"&#128123; Boo!");
+    /// # }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     #[cfg(feature = "unstable-handler")]
     #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
     pub fn with_unmappable_handler<'a>(
@@ -667,5 +700,36 @@ mod tests {
                 _ => false,
             });
         }
+    }
+
+    #[cfg(feature = "unstable-handler")]
+    #[test]
+    fn propagate_error_from_handler() {
+        use std::{error, fmt, io};
+        #[derive(Debug)]
+        struct AdHocError;
+        impl fmt::Display for AdHocError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Debug::fmt(self, f)
+            }
+        }
+        impl error::Error for AdHocError {}
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
+        let ret = write!(
+            writer.with_unmappable_handler(|_, _| Err(io::Error::new(
+                io::ErrorKind::Other,
+                AdHocError
+            ))),
+            "Hi👋-"
+        );
+        writer.flush().unwrap();
+        assert!(ret
+            .unwrap_err()
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<AdHocError>()
+            .is_some());
+        assert_eq!(writer.writer_ref(), b"Hi");
     }
 }
