@@ -278,8 +278,8 @@ fn writer_unmappable_char_with_handler() {
                 let src = c.decoded();
                 let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
                 {
-                    let mut writer =
-                        writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c)));
+                    let mut writer = writer
+                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
                     write!(writer, "{}", src).unwrap();
                     writer.flush().unwrap();
                 }
@@ -292,8 +292,8 @@ fn writer_unmappable_char_with_handler() {
                 let mut src = c.decoded().as_bytes();
                 let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
                 {
-                    let mut writer =
-                        writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c)));
+                    let mut writer = writer
+                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
                     while !src.is_empty() {
                         match writer.write(&src[..1]) {
                             Ok(1) => src = &src[1..],

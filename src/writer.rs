@@ -200,8 +200,8 @@ impl<W: io::Write> EncodingWriter<W> {
 
     /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
     ///
-    /// For each unmappable character encountered, the handler is called with two arguments: the
-    /// unmappable character and a writer created by [`passthrough`] so that the handler can
+    /// For each unmappable character encountered, the handler is called with two arguments: an
+    /// [`UnmappableError`] and a writer created by [`passthrough`] so that the handler can
     /// translate an unmappable character into a desired byte sequence in the destination encoding.
     /// The `Err` returned by the handler is rethrown to the caller of a writer method.
     ///
@@ -228,9 +228,10 @@ impl<W: io::Write> EncodingWriter<W> {
     ///
     /// let mut writer = EncodingWriter::new(Vec::new(), ISO_8859_7.new_encoder());
     /// {
-    ///     let mut w = writer.with_unmappable_handler(|c, p| write!(p, "&#{};", u32::from(c)));
-    ///     write!(w, "Boo!👻")?;
-    ///     w.flush()?;
+    ///     let mut writer =
+    ///         writer.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+    ///     write!(writer, "Boo!👻")?;
+    ///     writer.flush()?;
     /// }
     /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
     /// # }
@@ -240,21 +241,21 @@ impl<W: io::Write> EncodingWriter<W> {
     #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
     pub fn with_unmappable_handler<'a>(
         &'a mut self,
-        handler: impl FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
+        handler: impl FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
     ) -> impl io::Write + 'a {
         struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
 
         impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
         where
-            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
             fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
                 if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
-                    let value = match self.0.deferred_error.take() {
-                        Some(DefErr::Unmappable(e)) => e.value(),
+                    let e = match self.0.deferred_error.take() {
+                        Some(DefErr::Unmappable(e)) => e,
                         _ => unreachable!(),
                     };
-                    (self.1)(value, &mut PassthroughWriter(self.0))?;
+                    (self.1)(e, &mut PassthroughWriter(self.0))?;
                 }
                 Ok(())
             }
@@ -262,7 +263,7 @@ impl<W: io::Write> EncodingWriter<W> {
 
         impl<W: io::Write, H> WriteFmtAdapter for WithUnmappableHandlerWriter<'_, W, H>
         where
-            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
             fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
                 if buf.is_empty() {
@@ -277,7 +278,7 @@ impl<W: io::Write> EncodingWriter<W> {
 
         impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
         where
-            H: FnMut(char, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 if buf.is_empty() {
@@ -718,6 +719,21 @@ mod tests {
     #[test]
     fn propagate_error_from_handler() {
         use std::{error, fmt, io};
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
+        {
+            let mut writer = writer.with_unmappable_handler(|e, _| Err(e.wrap()));
+            let ret = write!(writer, "Boo!👻 Boo!👻");
+            writer.flush().unwrap();
+            assert!(ret
+                .unwrap_err()
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<UnmappableError>()
+                .is_some());
+        }
+        assert_eq!(writer.writer_ref(), b"Boo!");
+
         #[derive(Debug)]
         struct AdHocError;
         impl fmt::Display for AdHocError {
