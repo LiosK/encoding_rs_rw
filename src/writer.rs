@@ -28,14 +28,21 @@ const MIN_BUF_SIZE: usize = 32;
 /// even though it only accepts valid `&str`, and the writer type returned by [`passthrough`] can
 /// report `UnmappableError` even though it does not transform the input bytes at all.
 ///
-/// This wrapper returns `Ok(0)` when the input passed is empty, but this wrapper does not
-/// terminate the internal encoder automatically. Call [`finish`](EncodingWriter::finish)
-/// explicitly to let the encoder know the end of the stream, and it will return an error, if any,
-/// found at the end of the stream.
+/// This deferred error behavior could be particularly tricky if this writer encounters an error at
+/// the end of the input stream because it does not return the error at the very moment when the
+/// input buffer is _fully consumed_ (i.e., when [`write_all`] or [`write!`] returns `Ok(())` or
+/// when the cumulative sum of `Ok(n)` returned by [`write`] indicates the completion). It is
+/// recommended to call [`flush`] and [`finish`] at the end of the input to handle such a trailing
+/// error.
 ///
-/// [`BufWriter`]: std::io::BufWriter
-/// [`write_str`]: EncodingWriter::write_str
-/// [`passthrough`]: EncodingWriter::passthrough
+/// [`BufWriter`]: io::BufWriter
+/// [`write_str`]: Self::write_str
+/// [`passthrough`]: Self::passthrough
+/// [`write_all`]: io::Write::write_all
+/// [`write!`]: std::write
+/// [`write`]: io::Write::write
+/// [`finish`]: Self::finish
+/// [`flush`]: io::Write::flush
 ///
 /// # Examples
 ///
@@ -191,6 +198,109 @@ impl<W: io::Write> EncodingWriter<W> {
         PassthroughWriter(self)
     }
 
+    /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
+    ///
+    /// For each unmappable character encountered, the handler is called with two arguments: an
+    /// [`UnmappableError`] and a writer created by [`passthrough`] so that the handler can
+    /// translate an unmappable character into a desired byte sequence in the destination encoding.
+    /// The `Err` returned by the handler is rethrown to the caller of a writer method.
+    ///
+    /// It is highly recommended to call [`flush`] after writing to make sure the unmappable
+    /// character found at the end of the input is processed by the handler. See [the type-level
+    /// documentation](Self) for the deferred error behavior and `flush`.
+    ///
+    /// The handler must ensure that the bytes written into the supplied writer are a valid byte
+    /// sequence in the destination encoding, as the `passthrough` writer does not validate or
+    /// transform the input byte sequence.
+    ///
+    /// [`passthrough`]: Self::passthrough
+    /// [`flush`]: io::Write::flush
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "unstable-handler")]
+    /// # {
+    /// use std::io::Write as _;
+    ///
+    /// use encoding_rs::ISO_8859_7; // a.k.a. Latin/Greek
+    /// use encoding_rs_rw::EncodingWriter;
+    ///
+    /// let mut writer = EncodingWriter::new(Vec::new(), ISO_8859_7.new_encoder());
+    /// {
+    ///     let mut writer =
+    ///         writer.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+    ///     write!(writer, "Boo!👻")?;
+    ///     writer.flush()?;
+    /// }
+    /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
+    /// # }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    #[cfg(feature = "unstable-handler")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
+    pub fn with_unmappable_handler<'a>(
+        &'a mut self,
+        handler: impl FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
+    ) -> impl io::Write + 'a {
+        struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
+
+        impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
+                if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
+                    let e = match self.0.deferred_error.take() {
+                        Some(DefErr::Unmappable(e)) => e,
+                        _ => unreachable!(),
+                    };
+                    (self.1)(e, &mut PassthroughWriter(self.0))?;
+                }
+                Ok(())
+            }
+        }
+
+        impl<W: io::Write, H> WriteFmtAdapter for WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                self.handle_any_unmappable_error()?;
+                self.0.return_any_deferred_error()?;
+                self.0.reserve_buffer_capacity(MIN_BUF_SIZE)?;
+                Ok(self.0.write_str_inner(buf))
+            }
+        }
+
+        impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
+        where
+            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+        {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                self.handle_any_unmappable_error()?;
+                self.0.write(buf)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.handle_any_unmappable_error()?;
+                self.0.flush()
+            }
+
+            fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
+                write_fmt_impl(self, f)
+            }
+        }
+
+        WithUnmappableHandlerWriter(self, handler)
+    }
+
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
@@ -280,6 +390,12 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 }
 
+impl<W: io::Write> WriteFmtAdapter for EncodingWriter<W> {
+    fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
+        self.write_str(buf)
+    }
+}
+
 impl<W: io::Write> io::Write for EncodingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
@@ -346,63 +462,7 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
     }
 
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
-        // This method essentially combines `write_all` and `write_fmt` default implementations of
-        // `io::Write`, while using `write_str` to eliminate the UTF-8 validation.
-        struct FmtWriter<'w, W: io::Write> {
-            inner: &'w mut EncodingWriter<W>,
-            io_error: io::Result<()>,
-        }
-
-        impl<W: io::Write> fmt::Write for FmtWriter<'_, W> {
-            fn write_str(&mut self, mut s: &str) -> fmt::Result {
-                while !s.is_empty() {
-                    match self.inner.write_str(s) {
-                        Ok(0) => {
-                            self.io_error = Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "failed to write whole buffer",
-                            ));
-                            return Err(fmt::Error);
-                        }
-                        Ok(n) => {
-                            s = match s.get(n..) {
-                                Some(t) => t,
-                                None => {
-                                    debug_assert!(false, "unreachable");
-                                    self.io_error = Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        "encoder returned invalid string index",
-                                    ));
-                                    return Err(fmt::Error);
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                        Err(e) => {
-                            self.io_error = Err(e);
-                            return Err(fmt::Error);
-                        }
-                    }
-                }
-                Ok(())
-            }
-        }
-
-        let mut output = FmtWriter {
-            inner: self,
-            io_error: Ok(()),
-        };
-
-        match fmt::write(&mut output, f) {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                if output.io_error.is_err() {
-                    output.io_error
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
-                }
-            }
-        }
+        write_fmt_impl(self, f)
     }
 }
 
@@ -434,7 +494,7 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
 
 /// The writer type returned by [`EncodingWriter::passthrough`].
 #[derive(Debug)]
-struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
+pub struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
 
 impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -446,7 +506,7 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
         self.0.reserve_buffer_capacity(buf.len())?;
 
         if buf.len() > self.0.encoded_buf.capacity() {
-            // bypass internal buffer
+            // bypass internal buffer if input buffer is large
             assert!(self.0.encoded_buf.is_empty());
             self.0.writer_panicked = true;
             let ret = self.0.writer.write(buf);
@@ -467,6 +527,73 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
+    }
+}
+
+trait WriteFmtAdapter {
+    /// Writes a string slice just like [`std::fmt::Write::write_str`] but returns a result just
+    /// like [`std::io::Write::write`].
+    fn write_str_io(&mut self, buf: &str) -> io::Result<usize>;
+}
+
+/// Implements [`std::io::Write::write_fmt`].
+///
+/// This function essentially combines the default `write_all` and `write_fmt` implementations of
+/// `std::io::Write`, while using `write_str` to eliminate the UTF-8 validation.
+fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> io::Result<()> {
+    struct FmtWriter<'a, T> {
+        inner: &'a mut T,
+        io_error: io::Result<()>,
+    }
+
+    impl<T: WriteFmtAdapter> fmt::Write for FmtWriter<'_, T> {
+        fn write_str(&mut self, mut s: &str) -> fmt::Result {
+            while !s.is_empty() {
+                match self.inner.write_str_io(s) {
+                    Ok(0) => {
+                        self.io_error = Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "failed to write whole buffer",
+                        ));
+                        return Err(fmt::Error);
+                    }
+                    Ok(n) => {
+                        s = match s.get(n..) {
+                            Some(t) => t,
+                            None => {
+                                debug_assert!(false, "unreachable");
+                                self.io_error = Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    "encoder returned invalid string index",
+                                ));
+                                return Err(fmt::Error);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        self.io_error = Err(e);
+                        return Err(fmt::Error);
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut output = FmtWriter {
+        inner: writer,
+        io_error: Ok(()),
+    };
+    match fmt::write(&mut output, f) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            if output.io_error.is_err() {
+                output.io_error
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
+            }
+        }
     }
 }
 
@@ -570,5 +697,66 @@ mod tests {
             Err(e) => MalformedError::wrapped_in(&e).is_some(),
             _ => false,
         });
+
+        #[cfg(feature = "unstable-handler")]
+        {
+            let mut writer =
+                EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
+            assert!(matches!(
+                writer
+                    .with_unmappable_handler(|_, _| unreachable!())
+                    .write(&[0xc3]),
+                Ok(1)
+            ));
+            assert!(match writer.flush() {
+                Err(e) => MalformedError::wrapped_in(&e).is_some(),
+                _ => false,
+            });
+        }
+    }
+
+    #[cfg(feature = "unstable-handler")]
+    #[test]
+    fn propagate_error_from_handler() {
+        use std::{error, fmt, io};
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
+        {
+            let mut writer = writer.with_unmappable_handler(|e, _| Err(e.wrap()));
+            let ret = write!(writer, "Boo!👻 Boo!👻");
+            writer.flush().unwrap();
+            assert!(ret
+                .unwrap_err()
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<UnmappableError>()
+                .is_some());
+        }
+        assert_eq!(writer.writer_ref(), b"Boo!");
+
+        #[derive(Debug)]
+        struct AdHocError;
+        impl fmt::Display for AdHocError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Debug::fmt(self, f)
+            }
+        }
+        impl error::Error for AdHocError {}
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
+        {
+            let mut writer = writer.with_unmappable_handler(|_, _| {
+                Err(io::Error::new(io::ErrorKind::Other, AdHocError))
+            });
+            let ret = write!(writer, "Boo!👻 Boo!👻");
+            writer.flush().unwrap();
+            assert!(ret
+                .unwrap_err()
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<AdHocError>()
+                .is_some());
+        }
+        assert_eq!(writer.writer_ref(), b"Boo!");
     }
 }

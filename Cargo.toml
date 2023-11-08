@@ -1,6 +1,6 @@
 [package]
 name = "encoding_rs_rw"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2021"
@@ -13,6 +13,9 @@ categories = [
   "internationalization",
   "text-processing",
 ]
+
+[features]
+unstable-handler = []
 
 [dependencies]
 encoding_rs = "0.8"
