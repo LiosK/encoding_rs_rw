@@ -28,6 +28,12 @@
 //! and more flexible error semantics.
 //!
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
+//!
+//! ## Crate features
+//!
+//! - `unstable-handler` enables [`EncodingWriter::with_unmappable_handler`]. This
+//!   feature does not require a nightly build, but the API is experimental and yet
+//!   to be finalized.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
