@@ -28,14 +28,21 @@ const MIN_BUF_SIZE: usize = 32;
 /// even though it only accepts valid `&str`, and the writer type returned by [`passthrough`] can
 /// report `UnmappableError` even though it does not transform the input bytes at all.
 ///
-/// This wrapper returns `Ok(0)` when the input passed is empty, but this wrapper does not
-/// terminate the internal encoder automatically. Call [`finish`](EncodingWriter::finish)
-/// explicitly to let the encoder know the end of the stream, and it will return an error, if any,
-/// found at the end of the stream.
+/// This deferred error behavior could be particularly tricky if this writer encounters an error at
+/// the end of the input stream because it does not return the error at the very moment when the
+/// input buffer is _fully consumed_ (i.e., when [`write_all`] or [`write!`] returns `Ok(())` or
+/// when the cumulative sum of `Ok(n)` returned by [`write`] indicates the completion). It is
+/// recommended to call [`flush`] and [`finish`] at the end of the input to handle such a trailing
+/// error.
 ///
-/// [`BufWriter`]: std::io::BufWriter
-/// [`write_str`]: EncodingWriter::write_str
-/// [`passthrough`]: EncodingWriter::passthrough
+/// [`BufWriter`]: io::BufWriter
+/// [`write_str`]: Self::write_str
+/// [`passthrough`]: Self::passthrough
+/// [`write_all`]: io::Write::write_all
+/// [`write!`]: std::write
+/// [`write`]: io::Write::write
+/// [`finish`]: Self::finish
+/// [`flush`]: io::Write::flush
 ///
 /// # Examples
 ///
@@ -194,14 +201,20 @@ impl<W: io::Write> EncodingWriter<W> {
     /// Returns a new writer that handles [`UnmappableError`] with the specified handler.
     ///
     /// For each unmappable character encountered, the handler is called with two arguments: the
-    /// unmappable character and a writer created by [`passthrough`](Self::passthrough) so that the
-    /// handler can translate an unmappable character into a desired byte sequence in the
-    /// destination encoding. The `Err` returned by the handler is rethrown to the caller of a
-    /// writer method.
+    /// unmappable character and a writer created by [`passthrough`] so that the handler can
+    /// translate an unmappable character into a desired byte sequence in the destination encoding.
+    /// The `Err` returned by the handler is rethrown to the caller of a writer method.
+    ///
+    /// It is highly recommended to call [`flush`] after writing to make sure the unmappable
+    /// character found at the end of the input is processed by the handler. See [the type-level
+    /// documentation](Self) for the deferred error behavior and `flush`.
     ///
     /// The handler must ensure that the bytes written into the supplied writer are a valid byte
     /// sequence in the destination encoding, as the `passthrough` writer does not validate or
     /// transform the input byte sequence.
+    ///
+    /// [`passthrough`]: Self::passthrough
+    /// [`flush`]: io::Write::flush
     ///
     /// # Examples
     ///
@@ -214,14 +227,12 @@ impl<W: io::Write> EncodingWriter<W> {
     /// use encoding_rs_rw::EncodingWriter;
     ///
     /// let mut writer = EncodingWriter::new(Vec::new(), ISO_8859_7.new_encoder());
-    ///
-    /// write!(
-    ///     writer.with_unmappable_handler(|c, w| write!(w, "&#{};", u32::from(c))),
-    ///     "👻 Boo!"
-    /// )?;
-    /// writer.flush()?;
-    ///
-    /// assert_eq!(writer.writer_ref(), b"&#128123; Boo!");
+    /// {
+    ///     let mut w = writer.with_unmappable_handler(|c, p| write!(p, "&#{};", u32::from(c)));
+    ///     write!(w, "Boo!👻")?;
+    ///     w.flush()?;
+    /// }
+    /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
@@ -277,6 +288,7 @@ impl<W: io::Write> EncodingWriter<W> {
             }
 
             fn flush(&mut self) -> io::Result<()> {
+                self.handle_any_unmappable_error()?;
                 self.0.flush()
             }
 
@@ -716,20 +728,19 @@ mod tests {
         impl error::Error for AdHocError {}
 
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
-        let ret = write!(
-            writer.with_unmappable_handler(|_, _| Err(io::Error::new(
-                io::ErrorKind::Other,
-                AdHocError
-            ))),
-            "Hi👋-"
-        );
-        writer.flush().unwrap();
-        assert!(ret
-            .unwrap_err()
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<AdHocError>()
-            .is_some());
-        assert_eq!(writer.writer_ref(), b"Hi");
+        {
+            let mut writer = writer.with_unmappable_handler(|_, _| {
+                Err(io::Error::new(io::ErrorKind::Other, AdHocError))
+            });
+            let ret = write!(writer, "Boo!👻 Boo!👻");
+            writer.flush().unwrap();
+            assert!(ret
+                .unwrap_err()
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<AdHocError>()
+                .is_some());
+        }
+        assert_eq!(writer.writer_ref(), b"Boo!");
     }
 }
