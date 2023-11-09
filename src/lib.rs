@@ -1,3 +1,5 @@
+//! std::io::{Read, Write} wrappers for encoding_rs
+//!
 //! This crate provides [`std::io::Read`] and [`std::io::Write`] implementations for
 //! [`encoding_rs::Decoder`] and [`encoding_rs::Encoder`], respectively, to support
 //! Rust's standard streaming API.
@@ -29,11 +31,12 @@
 //!
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
 //!
-//! ## Crate features
+//! # Crate features
 //!
-//! `unstable-handler` enables [`EncodingWriter::with_unmappable_handler`]. This
-//! feature does not require a nightly build, but the API is experimental and yet to
-//! be finalized.
+//! `unstable-handler` enables [`EncodingWriter::with_unmappable_handler`] that
+//! provides an encoding writer processing unmappable characters with a specified
+//! handler. This feature does not require a nightly build, but the API is
+//! experimental and yet to be finalized.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
