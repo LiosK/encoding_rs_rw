@@ -127,7 +127,7 @@ impl<W: io::Write> EncodingWriter<W> {
         );
 
         let deferred_error = match result {
-            encoding_rs::EncoderResult::InputEmpty => self.return_any_deferred_error(),
+            encoding_rs::EncoderResult::InputEmpty => self.realize_any_deferred_error(),
             _ => {
                 debug_assert!(false, "unreachable");
                 Err(io::Error::new(
@@ -162,10 +162,15 @@ impl<W: io::Write> EncodingWriter<W> {
     /// primary option because `write_fmt` under the hood also skips the UTF-8 validation.
     pub fn write_str(&mut self, buf: &str) -> io::Result<usize> {
         if buf.is_empty() {
-            // `io::Write` may return `Ok(0)` if input buffer is 0 bytes in length
+            // report confirmed error if any or return `Ok(0)` otherwise because `io::Write`
+            // implementer may do so if input buffer is 0 bytes in length
+            self.realize_deferred_error_except_incomplete_utf8()?;
             return Ok(0);
+        } else {
+            // report any error including `IncompleteUtf8` that represents `MalformedError` before
+            // writing another valid `&str`
+            self.realize_any_deferred_error()?;
         }
-        self.return_any_deferred_error()?;
         self.reserve_buffer_capacity(MIN_BUF_SIZE)?;
         Ok(self.write_str_inner(buf))
     }
@@ -205,9 +210,9 @@ impl<W: io::Write> EncodingWriter<W> {
     /// translate an unmappable character into a desired byte sequence in the destination encoding.
     /// The `Err` returned by the handler is rethrown to the caller of a writer method.
     ///
-    /// It is highly recommended to call [`flush`] after writing to make sure the unmappable
-    /// character found at the end of the input is processed by the handler. See [the type-level
-    /// documentation](Self) for the deferred error behavior and `flush`.
+    /// It is recommended to call [`flush`] after writing the entire data to make sure the
+    /// unmappable character found at the end of the input is processed by the handler. See [the
+    /// type-level documentation](Self) for the deferred error behavior and `flush`.
     ///
     /// The handler must ensure that the bytes written into the supplied writer are a valid byte
     /// sequence in the destination encoding, as the `passthrough` writer does not validate or
@@ -249,15 +254,14 @@ impl<W: io::Write> EncodingWriter<W> {
         where
             H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
-            fn handle_any_unmappable_error(&mut self) -> io::Result<()> {
-                if matches!(self.0.deferred_error, Some(DefErr::Unmappable(..))) {
-                    let e = match self.0.deferred_error.take() {
-                        Some(DefErr::Unmappable(e)) => e,
+            fn handle_deferred_unmappable_error(&mut self) -> io::Result<()> {
+                match self.0.deferred_error {
+                    Some(DefErr::Unmappable(..)) => match self.0.deferred_error.take() {
+                        Some(DefErr::Unmappable(e)) => (self.1)(e, &mut PassthroughWriter(self.0)),
                         _ => unreachable!(),
-                    };
-                    (self.1)(e, &mut PassthroughWriter(self.0))?;
+                    },
+                    _ => Ok(()),
                 }
-                Ok(())
             }
         }
 
@@ -266,13 +270,8 @@ impl<W: io::Write> EncodingWriter<W> {
             H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
             fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
-                if buf.is_empty() {
-                    return Ok(0);
-                }
-                self.handle_any_unmappable_error()?;
-                self.0.return_any_deferred_error()?;
-                self.0.reserve_buffer_capacity(MIN_BUF_SIZE)?;
-                Ok(self.0.write_str_inner(buf))
+                self.handle_deferred_unmappable_error()?;
+                self.0.write_str_io(buf)
             }
         }
 
@@ -281,19 +280,17 @@ impl<W: io::Write> EncodingWriter<W> {
             H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
         {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                if buf.is_empty() {
-                    return Ok(0);
-                }
-                self.handle_any_unmappable_error()?;
+                self.handle_deferred_unmappable_error()?;
                 self.0.write(buf)
             }
 
             fn flush(&mut self) -> io::Result<()> {
-                self.handle_any_unmappable_error()?;
+                self.handle_deferred_unmappable_error()?;
                 self.0.flush()
             }
 
             fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
+                self.handle_deferred_unmappable_error()?;
                 write_fmt_impl(self, f)
             }
         }
@@ -323,15 +320,27 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 
     /// Consumes `self.deferred_error` and reports the corresponding `io::Error` (if applicable).
-    fn return_any_deferred_error(&mut self) -> io::Result<()> {
+    fn realize_any_deferred_error(&mut self) -> io::Result<()> {
         match self.deferred_error.take() {
             None => Ok(()),
             Some(DefErr::Unmappable(e)) => Err(e.wrap()),
             Some(DefErr::MalformedUtf8(e)) => Err(e.wrap()),
-            // IncompleteUtf8 represents MalformedError before writing another &str or at EOF,
-            // whereas this state can be recovered when writing &[u8] containing the subsequent
+            // `IncompleteUtf8` represents `MalformedError` before writing another `&str` or at EOF,
+            // whereas this state can be recovered when writing `&[u8]` containing the subsequent
             // UTF-8 character fragment.
             Some(DefErr::IncompleteUtf8(..)) => Err(MalformedError::new().wrap()),
+        }
+    }
+
+    /// Invokes `realize_any_deferred_error` if `self.deferred_error` represents an error other
+    /// than `IncompleteUtf8`.
+    ///
+    /// `IncompleteUtf8` is treated differently because it only can be fixed by a later `write`
+    /// call.
+    fn realize_deferred_error_except_incomplete_utf8(&mut self) -> io::Result<()> {
+        match self.deferred_error {
+            None | Some(DefErr::IncompleteUtf8(..)) => Ok(()),
+            _ => self.realize_any_deferred_error(),
         }
     }
 
@@ -398,12 +407,10 @@ impl<W: io::Write> WriteFmtAdapter for EncodingWriter<W> {
 
 impl<W: io::Write> io::Write for EncodingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // recover from IncompleteUtf8 later; otherwise, report any deferred error
+        self.realize_deferred_error_except_incomplete_utf8()?;
         if buf.is_empty() {
-            // `io::Write` may return `Ok(0)` if input buffer is 0 bytes in length
             return Ok(0);
-        } else if !matches!(self.deferred_error, Some(DefErr::IncompleteUtf8(..))) {
-            // recover from IncompleteUtf8 later; otherwise, report any deferred error
-            self.return_any_deferred_error()?;
         }
         self.reserve_buffer_capacity(MIN_BUF_SIZE)?;
 
@@ -416,7 +423,7 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
                 // other match arms consume invalid UTF-8 bytes only and defer error state until a
                 // subsequent call.
                 Ok(s) => self.write_str_inner(s),
-                // consume invalid bytes and defer MalformedError until subsequent call
+                // consume invalid bytes and defer `MalformedError` until subsequent call
                 Err(Some(error_len)) => {
                     self.deferred_error = Some(DefErr::MalformedUtf8(MalformedError::new()));
                     error_len
@@ -439,10 +446,12 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
                 debug_assert!(old_len < new_len && new_len == bs.len());
                 let consumed = match str_from_utf8_up_to_error(bs.as_ref()) {
                     Ok(s) => self.write_str_inner(s),
+                    // incomplete fragment turned out to be invalid UTF-8
                     Err(Some(error_len)) => {
                         self.deferred_error = Some(DefErr::MalformedUtf8(MalformedError::new()));
                         error_len
                     }
+                    // still incomplete
                     Err(None) => {
                         assert!(new_len < 4 && new_len == old_len + buf.len());
                         self.deferred_error = Some(DefErr::IncompleteUtf8(bs));
@@ -456,12 +465,13 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.return_any_deferred_error()?;
+        self.realize_any_deferred_error()?;
         self.flush_buffer()?;
         self.writer.flush()
     }
 
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
+        self.realize_deferred_error_except_incomplete_utf8()?;
         write_fmt_impl(self, f)
     }
 }
@@ -499,10 +509,11 @@ pub struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
 impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
-            // `io::Write` may return `Ok(0)` if input buffer is 0 bytes in length
+            self.0.realize_deferred_error_except_incomplete_utf8()?;
             return Ok(0);
+        } else {
+            self.0.realize_any_deferred_error()?;
         }
-        self.0.return_any_deferred_error()?;
         self.0.reserve_buffer_capacity(buf.len())?;
 
         if buf.len() > self.0.encoded_buf.capacity() {
@@ -610,8 +621,8 @@ mod tests {
         assert!(matches!(writer.write_all("Oh🥺".as_bytes()), Ok(())));
         match writer.finish() {
             (writer, buffer, Err(e)) => {
-                assert_eq!(writer, &[]);
-                assert_eq!(buffer, &[b'O', b'h']);
+                assert_eq!(writer, b"");
+                assert_eq!(buffer, b"Oh");
                 assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
             }
             ret => panic!("assertion failed: {:?}", ret),
@@ -619,13 +630,32 @@ mod tests {
 
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::EUC_JP.new_encoder());
         assert!(matches!(writer.write_all("Oh🥺".as_bytes()), Ok(())));
-        assert!(matches!(writer.write_all(&[]), Ok(())));
-        assert!(matches!(writer.write_all(&[]), Ok(())));
-        assert!(matches!(writer.write(&[]), Ok(0)));
-        assert!(matches!(writer.write(&[]), Ok(0)));
         match writer.flush() {
             Err(e) => {
                 assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
+            }
+            ret => panic!("assertion failed: {:?}", ret),
+        };
+        match writer.finish() {
+            (writer, buffer, Ok(())) => {
+                assert_eq!(writer, b"");
+                assert_eq!(buffer, b"Oh");
+            }
+            ret => panic!("assertion failed: {:?}", ret),
+        };
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_2022_JP.new_encoder());
+        assert!(matches!(writer.write_all("Oh🥺".as_bytes()), Ok(())));
+        match writer.write(b"") {
+            Err(e) => {
+                assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
+            }
+            ret => panic!("assertion failed: {:?}", ret),
+        };
+        match writer.finish() {
+            (writer, buffer, Ok(())) => {
+                assert_eq!(writer, b"");
+                assert_eq!(buffer, b"Oh");
             }
             ret => panic!("assertion failed: {:?}", ret),
         };
@@ -634,8 +664,8 @@ mod tests {
         assert!(matches!(write!(writer, "Oh🥺"), Ok(())));
         match writer.finish() {
             (writer, buffer, Err(e)) => {
-                assert_eq!(writer, &[]);
-                assert_eq!(buffer, &[b'O', b'h']);
+                assert_eq!(writer, b"");
+                assert_eq!(buffer, b"Oh");
                 assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
             }
             ret => panic!("assertion failed: {:?}", ret),
