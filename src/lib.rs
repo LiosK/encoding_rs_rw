@@ -50,9 +50,12 @@ pub use error::{MalformedError, UnmappableError};
 pub use reader::DecodingReader;
 pub use writer::EncodingWriter;
 
-#[cfg(feature = "unstable-handler")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
-pub use writer::PassthroughWriter;
+/// Miscellaneous types not intended for direct access by name.
+pub mod misc {
+    #[cfg(feature = "unstable-handler")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
+    pub use super::writer::PassthroughWriter;
+}
 
 #[cfg(test)]
 mod tests {
