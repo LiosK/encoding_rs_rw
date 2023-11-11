@@ -135,13 +135,19 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// use std::io::Read as _;
     ///
     /// use encoding_rs::EUC_JP;
-    /// use encoding_rs_rw::DecodingReader;
+    /// use encoding_rs_rw::{DecodingReader, MalformedError};
     ///
     /// let src: &[u8] = &[182, 229, 187, 0xff, 176, 236, 192, 184];
     /// let mut reader = DecodingReader::new(src, EUC_JP.new_decoder());
     ///
     /// let mut dst = String::new();
     /// reader.lossy().read_to_string(&mut dst)?;
+    /// match reader.finish() {
+    ///     (_, _, Ok(_)) => {}
+    ///     (_, _, Err(e)) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
+    ///     (_, _, Err(e)) => return Err(e),
+    /// }
+    ///
     /// assert_eq!(dst, "九�一生");
     /// # Ok::<(), std::io::Error>(())
     /// ```
