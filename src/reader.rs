@@ -306,9 +306,7 @@ fn read_to_string_impl(
 
     impl Drop for PanicGuard<'_> {
         fn drop(&mut self) {
-            unsafe {
-                self.inner.set_len(self.len);
-            }
+            unsafe { self.inner.set_len(self.len) };
         }
     }
 
