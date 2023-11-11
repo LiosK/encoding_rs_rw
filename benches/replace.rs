@@ -122,7 +122,6 @@ fn raw_decoder(b: &mut test::Bencher) {
 
 const TEXT: &str = include_str!("text_ja.txt");
 
-#[cfg(feature = "unstable-handler")]
 #[bench]
 fn writer_with_handler(b: &mut test::Bencher) {
     let src = test::black_box(TEXT);

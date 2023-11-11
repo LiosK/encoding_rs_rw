@@ -30,13 +30,6 @@
 //! and more flexible error semantics.
 //!
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
-//!
-//! # Crate features
-//!
-//! `unstable-handler` enables [`EncodingWriter::with_unmappable_handler`] that
-//! provides an encoding writer processing unmappable characters with a specified
-//! handler. This feature does not require a nightly build, but the API is
-//! experimental and yet to be finalized.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -52,8 +45,6 @@ pub use writer::EncodingWriter;
 
 /// Miscellaneous types not intended for direct access by name.
 pub mod misc {
-    #[cfg(feature = "unstable-handler")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
     pub use super::writer::PassthroughWriter;
 }
 

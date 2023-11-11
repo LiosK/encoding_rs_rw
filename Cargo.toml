@@ -14,9 +14,6 @@ categories = [
   "text-processing",
 ]
 
-[features]
-unstable-handler = []
-
 [dependencies]
 encoding_rs = "0.8"
 

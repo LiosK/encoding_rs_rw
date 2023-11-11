@@ -199,7 +199,7 @@ impl<W: io::Write> EncodingWriter<W> {
     /// assert_eq!(writer.writer_ref(), br"\U0001F602");
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn passthrough(&mut self) -> impl io::Write + '_ {
+    pub fn passthrough(&mut self) -> PassthroughWriter<W> {
         PassthroughWriter(self)
     }
 
@@ -224,8 +224,6 @@ impl<W: io::Write> EncodingWriter<W> {
     /// # Examples
     ///
     /// ```rust
-    /// # #[cfg(feature = "unstable-handler")]
-    /// # {
     /// use std::io::Write as _;
     ///
     /// use encoding_rs::ISO_8859_7; // a.k.a. Latin/Greek
@@ -239,15 +237,12 @@ impl<W: io::Write> EncodingWriter<W> {
     ///     writer.flush()?;
     /// }
     /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
-    /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    #[cfg(feature = "unstable-handler")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
     pub fn with_unmappable_handler<'a>(
         &'a mut self,
         handler: impl FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
-    ) -> impl io::Write + 'a {
+    ) -> impl io::Write + '_ {
         struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
 
         impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
@@ -257,7 +252,7 @@ impl<W: io::Write> EncodingWriter<W> {
             fn handle_deferred_unmappable_error(&mut self) -> io::Result<()> {
                 match self.0.deferred_error {
                     Some(DefErr::Unmappable(..)) => match self.0.deferred_error.take() {
-                        Some(DefErr::Unmappable(e)) => (self.1)(e, &mut PassthroughWriter(self.0)),
+                        Some(DefErr::Unmappable(e)) => (self.1)(e, &mut self.0.passthrough()),
                         _ => unreachable!(),
                     },
                     _ => Ok(()),
@@ -728,24 +723,19 @@ mod tests {
             _ => false,
         });
 
-        #[cfg(feature = "unstable-handler")]
-        {
-            let mut writer =
-                EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
-            assert!(matches!(
-                writer
-                    .with_unmappable_handler(|_, _| unreachable!())
-                    .write(&[0xc3]),
-                Ok(1)
-            ));
-            assert!(match writer.flush() {
-                Err(e) => MalformedError::wrapped_in(&e).is_some(),
-                _ => false,
-            });
-        }
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
+        assert!(matches!(
+            writer
+                .with_unmappable_handler(|_, _| unreachable!())
+                .write(&[0xc3]),
+            Ok(1),
+        ));
+        assert!(match writer.flush() {
+            Err(e) => MalformedError::wrapped_in(&e).is_some(),
+            _ => false,
+        });
     }
 
-    #[cfg(feature = "unstable-handler")]
     #[test]
     fn propagate_error_from_handler() {
         use std::{error, fmt, io};
