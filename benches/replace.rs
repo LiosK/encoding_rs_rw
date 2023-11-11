@@ -4,7 +4,7 @@
 
 extern crate test;
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
 use encoding_rs::{ISO_8859_15 as Enc, UTF_8};
 use encoding_rs_rw::{DecodingReader, EncodingWriter, MalformedError, UnmappableError};
@@ -68,8 +68,7 @@ fn writer_with_handler(b: &mut test::Bencher) {
     b.iter(|| {
         let mut writer = EncodingWriter::new(Vec::new(), Enc.new_encoder());
         {
-            let mut writer =
-                writer.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+            let mut writer = writer.with_unmappable_handler(|e, w| write_ncr(e.value(), w));
             write!(writer, "{}", src).unwrap();
             writer.flush().unwrap();
         }
@@ -91,13 +90,13 @@ fn writer_manual(b: &mut test::Bencher) {
                 Ok(consumed) => src = &src[consumed..],
                 Err(e) => {
                     let c = UnmappableError::wrapped_in(&e).unwrap().value();
-                    write!(writer.passthrough(), "&#{};", u32::from(c)).unwrap();
+                    write_ncr(c, &mut writer.passthrough()).unwrap();
                 }
             }
         }
         if let Err(e) = writer.flush() {
             let c = UnmappableError::wrapped_in(&e).unwrap().value();
-            write!(writer.passthrough(), "&#{};", u32::from(c)).unwrap();
+            write_ncr(c, &mut writer.passthrough()).unwrap();
         }
 
         assert_eq!(writer.writer_ref(), &expected);
@@ -122,4 +121,26 @@ fn encoder_expected(src: &str) -> Vec<u8> {
     let (result, _, _) = encoder.encode_from_utf8_to_vec(src, &mut dst, true);
     assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
     dst
+}
+
+/// Writes a character into a writer as a HTML numeric character reference without creating the
+/// formatter structure.
+fn write_ncr(c: char, w: &mut impl io::Write) -> io::Result<()> {
+    let mut num = u32::from(c);
+    let mut buffer = [0; 10]; // "&#1114111;" (char::MAX)
+    let mut pos = buffer.len() - 1;
+    buffer[pos] = b';';
+    pos -= 1;
+    buffer[pos] = (num % 10) as u8 + b'0';
+    pos -= 1;
+    while num >= 10 {
+        num /= 10;
+        buffer[pos] = (num % 10) as u8 + b'0';
+        pos -= 1;
+    }
+    buffer[pos] = b'#';
+    pos -= 1;
+    buffer[pos] = b'&';
+
+    w.write_all(&buffer[pos..])
 }
