@@ -48,5 +48,6 @@ Licensed under the Apache License, Version 2.0.
 
 ## See also
 
+- [docs.rs/encoding_rs_rw](https://docs.rs/encoding_rs_rw/latest/encoding_rs_rw/)
 - [encoding_rs - crates.io](https://crates.io/crates/encoding_rs)
 - [encoding_rs_io - crates.io](https://crates.io/crates/encoding_rs_io)
