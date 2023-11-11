@@ -38,7 +38,7 @@ use std::{error, fmt, io};
 ///
 /// assert_eq!(dst, "綺�星");
 /// ```
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MalformedError(());
 
 impl fmt::Display for MalformedError {
@@ -112,7 +112,7 @@ impl MalformedError {
 /// );
 /// # Ok::<(), std::io::Error>(())
 /// ```
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UnmappableError(char);
 
 impl fmt::Display for UnmappableError {

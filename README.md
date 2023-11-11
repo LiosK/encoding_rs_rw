@@ -1,7 +1,9 @@
-# std::io::{Read, Write} wrappers for encoding_rs
+# encoding_rs_rw
 
 [![Crates.io](https://img.shields.io/crates/v/encoding_rs_rw)](https://crates.io/crates/encoding_rs_rw)
 [![License](https://img.shields.io/crates/l/encoding_rs_rw)](https://github.com/LiosK/encoding_rs_rw/blob/main/LICENSE)
+
+std::io::{Read, Write} wrappers for encoding_rs
 
 This crate provides `std::io::Read` and `std::io::Write` implementations for
 `encoding_rs::Decoder` and `encoding_rs::Encoder`, respectively, to support
@@ -35,9 +37,10 @@ and more flexible error semantics.
 
 ## Crate features
 
-`unstable-handler` enables `EncodingWriter::with_unmappable_handler`. This
-feature does not require a nightly build, but the API is experimental and yet to
-be finalized.
+`unstable-handler` enables `EncodingWriter::with_unmappable_handler` that
+provides an encoding writer processing unmappable characters with a specified
+handler. This feature does not require a nightly build, but the API is
+experimental and yet to be finalized.
 
 ## License
 
@@ -45,5 +48,6 @@ Licensed under the Apache License, Version 2.0.
 
 ## See also
 
+- [docs.rs/encoding_rs_rw](https://docs.rs/encoding_rs_rw/latest/encoding_rs_rw/)
 - [encoding_rs - crates.io](https://crates.io/crates/encoding_rs)
 - [encoding_rs_io - crates.io](https://crates.io/crates/encoding_rs_io)
