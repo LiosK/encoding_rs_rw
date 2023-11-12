@@ -185,10 +185,8 @@ impl<R: io::BufRead> DecodingReader<R> {
         impl<R: io::BufRead> io::Read for LossyReader<'_, R> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 const REPL: &[u8] = "\u{FFFD}".as_bytes();
-                if buf.is_empty() {
-                    return Ok(0);
-                } else if !self.0.fallback_buf.is_empty() {
-                    return Ok(self.0.fallback_buf.read_at_least_one_byte(buf));
+                if !self.0.fallback_buf.is_empty() {
+                    return Ok(self.0.fallback_buf.read_buf(buf));
                 } else if self.0.deferred_error.take().is_some() {
                     // write REPLACEMENT CHARACTER and return early because `read_inner` called
                     // later may return `Err` originated from `BufRead::fill_buf`
@@ -197,8 +195,10 @@ impl<R: io::BufRead> DecodingReader<R> {
                         Ok(REPL.len())
                     } else {
                         self.0.fallback_buf.fill_from_slice(REPL);
-                        Ok(self.0.fallback_buf.read_at_least_one_byte(buf))
+                        Ok(self.0.fallback_buf.read_buf(buf))
                     };
+                } else if buf.is_empty() {
+                    return Ok(0);
                 }
 
                 let mut n = self.0.read_inner(buf)?;
@@ -210,7 +210,7 @@ impl<R: io::BufRead> DecodingReader<R> {
                     } else if n == 0 {
                         self.0.deferred_error = None;
                         self.0.fallback_buf.fill_from_slice(REPL);
-                        n += self.0.fallback_buf.read_at_least_one_byte(buf);
+                        n += self.0.fallback_buf.read_buf(buf);
                     }
                 }
                 Ok(n)
@@ -244,7 +244,7 @@ impl<R: io::BufRead> DecodingReader<R> {
                     .decode_to_utf8_without_replacement(src, fallback_buf, false);
             if written > 0 {
                 self.fallback_buf.add_len(written);
-                written = self.fallback_buf.read_at_least_one_byte(buf);
+                written = self.fallback_buf.read_buf(buf);
             }
             (result, consumed, written)
         };
@@ -281,18 +281,17 @@ impl<R: io::BufRead> ReadToStringAdapter for DecodingReader<R> {
 
 impl<R: io::BufRead> io::Read for DecodingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // ensure preconditions
-        if buf.is_empty() {
-            // `io::Read` may return `Ok(0)` if output buffer is 0 bytes in length
-            return Ok(0);
-        } else if !self.fallback_buf.is_empty() {
+        if !self.fallback_buf.is_empty() {
             // flush internal buffer if it contains leftovers from previous call; return early to
             // keep this cold path simple even if `buf` has remaining space to read more bytes
-            return Ok(self.fallback_buf.read_at_least_one_byte(buf));
+            return Ok(self.fallback_buf.read_buf(buf));
         } else if let Some(e) = self.deferred_error.take() {
             // report the error that has been deferred until all the decoded bytes (including those
             // left in the fallback buffer) are written
             return Err(e.wrap());
+        } else if buf.is_empty() {
+            // `io::Read` may return `Ok(0)` if output buffer is 0 bytes in length
+            return Ok(0);
         }
         match self.read_inner(buf) {
             Ok(0) => match self.deferred_error.take() {

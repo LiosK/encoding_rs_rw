@@ -47,15 +47,10 @@ impl MiniBuffer {
         &mut self.buf[self.len.into()..]
     }
 
-    /// Reads bytes from the internal buffer as many as possible but at least one byte, returning
-    /// the number of bytes read.
-    ///
-    /// # Panics
-    ///
-    /// This method panics if either of the internal buffer or the output buffer is empty.
-    pub fn read_at_least_one_byte(&mut self, buf: &mut [u8]) -> usize {
+    /// Reads bytes from the internal buffer to fill the specified buffer, returning the number of
+    /// bytes read.
+    pub fn read_buf(&mut self, buf: &mut [u8]) -> usize {
         let n = self.len().min(buf.len());
-        assert!(n > 0, "either internal buffer or output buffer was empty");
         buf[..n].copy_from_slice(&self.buf[..n]);
         self.remove_front(n);
         n
