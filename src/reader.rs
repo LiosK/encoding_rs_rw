@@ -118,6 +118,30 @@ impl<R: io::BufRead> DecodingReader<R> {
         )
     }
 
+    /// Notifies the underlying decoder of the end of input stream, appending a replacement
+    /// character to the specified buffer where applicable.
+    ///
+    /// This method appends any unread bytes left in `self` and a replacement character for a
+    /// malformed byte sequence found at the end of the input stream to `buf` and then returns the
+    /// underlying reader. It returns `Err` and unconsumed `self` if the decoding reader is in an
+    /// incomplete state and is not able to append unread bytes to the string buffer.
+    pub fn finish_lossy(mut self, buf: &mut String) -> Result<R, Self> {
+        match str::from_utf8(self.fallback_buf.as_ref()) {
+            Err(_) => return Err(self),
+            Ok(t) => buf.push_str(t),
+        }
+        if self.deferred_error.is_some() {
+            buf.push('\u{FFFD}');
+        }
+
+        let src_rem = self.reader.fallback_buffer();
+        buf.reserve(self.decoder.max_utf8_buffer_length(src_rem.len()).unwrap());
+        let (result, _, _) = self.decoder.decode_to_string(src_rem, buf, true);
+        debug_assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
+
+        Ok(self.reader.destroy())
+    }
+
     /// Returns a variant of this decoding reader that replaces a detected malformed byte sequence
     /// with a replacement character (U+FFFD) instead of reporting a `MalformedError`.
     ///
@@ -125,9 +149,11 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// [`DecodingReader`], except that it does not report `MalformedError`.
     ///
     /// The returned reader does not replace an incomplete character fragment at the end of the
-    /// input stream. The caller must handle such a fragment manually through [`finish`].
+    /// input stream. The caller must handle such a fragment manually through [`finish`] or
+    /// [`finish_lossy`].
     ///
     /// [`finish`]: DecodingReader::finish
+    /// [`finish_lossy`]: DecodingReader::finish_lossy
     ///
     /// # Examples
     ///
@@ -142,11 +168,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     ///
     /// let mut dst = String::new();
     /// reader.lossy().read_to_string(&mut dst)?;
-    /// match reader.finish() {
-    ///     (_, _, Ok(_)) => {}
-    ///     (_, _, Err(e)) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
-    ///     (_, _, Err(e)) => return Err(e),
-    /// }
+    /// reader.finish_lossy(&mut dst).expect("read_to_string flaw");
     ///
     /// assert_eq!(dst, "九�一生");
     /// # Ok::<(), std::io::Error>(())
@@ -343,10 +365,10 @@ mod tests {
     /// Tests rare cases where `finish` reports `Err` after `read` returned `Ok(0)`.
     #[test]
     fn trailing_malformed_bytes() {
-        let mut reader = DecodingReader::new(
-            &[b'h', b'e', b'l', b'l', b'o', 0xe0][..],
-            encoding_rs::SHIFT_JIS.new_decoder(),
-        );
+        use encoding_rs::SHIFT_JIS as Enc;
+        let src: &[u8] = &[b'h', b'e', b'l', b'l', b'o', 0xe0];
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
         let mut dst = String::new();
         assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
         assert_eq!(dst, "hello");
@@ -355,10 +377,7 @@ mod tests {
             _ => false,
         });
 
-        let mut reader = DecodingReader::new(
-            &[b'h', b'e', b'l', b'l', b'o', 0xe0][..],
-            encoding_rs::SHIFT_JIS.new_decoder(),
-        );
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
         let mut dst = String::new();
         assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
         assert!(matches!(reader.read_to_string(&mut dst), Ok(0)));
@@ -371,19 +390,64 @@ mod tests {
             _ => false,
         });
 
-        let mut reader = DecodingReader::new(
-            &[b'h', b'e', b'l', b'l', b'o', 0xe0][..],
-            encoding_rs::SHIFT_JIS.new_decoder(),
-        );
-        {
-            let mut reader = reader.lossy();
-            let mut dst = String::new();
-            assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
-            assert_eq!(dst, "hello");
-        }
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = [0; 64];
+        assert!(matches!(reader.read(&mut dst), Ok(5)));
+        assert_eq!(&dst[..5], b"hello");
         assert!(match reader.finish() {
             (_, v, Err(e)) => v.is_empty() && MalformedError::wrapped_in(&e).is_some(),
             _ => false,
         });
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = String::new();
+        assert!(matches!(reader.lossy().read_to_string(&mut dst), Ok(5)));
+        assert_eq!(dst, "hello");
+        assert!(match reader.finish() {
+            (_, v, Err(e)) => v.is_empty() && MalformedError::wrapped_in(&e).is_some(),
+            _ => false,
+        });
+    }
+
+    /// Tests rare cases where `finish_lossy` replaces malformed bytes with replacement characters
+    /// after `read` returned `Ok(0)`.
+    #[test]
+    fn trailing_malformed_bytes_lossy() {
+        use encoding_rs::SHIFT_JIS as Enc;
+        let src: &[u8] = &[b'h', b'e', b'l', b'l', b'o', 0xe0];
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = String::new();
+        assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
+        assert_eq!(dst, "hello");
+        assert!(reader.finish_lossy(&mut dst).is_ok());
+        assert_eq!(dst, "hello\u{FFFD}");
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = String::new();
+        assert!(matches!(reader.read_to_string(&mut dst), Ok(5)));
+        assert!(matches!(reader.read_to_string(&mut dst), Ok(0)));
+        assert!(matches!(reader.read_to_string(&mut dst), Ok(0)));
+        assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
+        assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
+        assert_eq!(dst, "hello");
+        assert!(reader.finish_lossy(&mut dst).is_ok());
+        assert_eq!(dst, "hello\u{FFFD}");
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = vec![0; 64];
+        assert!(matches!(reader.read(&mut dst), Ok(5)));
+        dst.truncate(5);
+        let mut dst = String::from_utf8(dst).unwrap();
+        assert_eq!(dst, "hello");
+        assert!(reader.finish_lossy(&mut dst).is_ok());
+        assert_eq!(dst, "hello\u{FFFD}");
+
+        let mut reader = DecodingReader::new(src, Enc.new_decoder());
+        let mut dst = String::new();
+        assert!(matches!(reader.lossy().read_to_string(&mut dst), Ok(5)));
+        assert_eq!(dst, "hello");
+        assert!(reader.finish_lossy(&mut dst).is_ok());
+        assert_eq!(dst, "hello\u{FFFD}");
     }
 }

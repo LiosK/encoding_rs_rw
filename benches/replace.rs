@@ -19,11 +19,7 @@ fn reader_lossy(b: &mut test::Bencher) {
         let mut dst = String::new();
         let mut reader = DecodingReader::new(&src[..], UTF_8.new_decoder());
         reader.lossy().read_to_string(&mut dst).unwrap();
-        match reader.finish() {
-            (_, _, Ok(_)) => {}
-            (_, _, Err(e)) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
-            (_, _, Err(_)) => unreachable!(),
-        }
+        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });
@@ -43,11 +39,7 @@ fn reader_manual_naive(b: &mut test::Bencher) {
                 Err(_) => unreachable!(),
             }
         }
-        match reader.finish() {
-            (_, _, Ok(_)) => {}
-            (_, _, Err(e)) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
-            (_, _, Err(_)) => unreachable!(),
-        }
+        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });
@@ -95,11 +87,7 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
                 }
             }
         }
-        match reader.finish() {
-            (_, _, Ok(_)) => {}
-            (_, _, Err(e)) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
-            (_, _, Err(_)) => unreachable!(),
-        }
+        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });
