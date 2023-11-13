@@ -183,36 +183,7 @@ impl<R: io::BufRead> DecodingReader<R> {
 
         impl<R: io::BufRead> io::Read for LossyReader<'_, R> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-                const REPL: &[u8] = "\u{FFFD}".as_bytes();
-                if !self.0.fallback_buf.is_empty() {
-                    return Ok(self.0.fallback_buf.read_buf(buf));
-                } else if self.0.deferred_error.take().is_some() {
-                    // write REPLACEMENT CHARACTER and return early because `read_inner` called
-                    // later may return `Err` originated from `BufRead::fill_buf`
-                    return if buf.len() >= REPL.len() {
-                        buf[..REPL.len()].copy_from_slice(REPL);
-                        Ok(REPL.len())
-                    } else {
-                        self.0.fallback_buf.fill_from_slice(REPL);
-                        Ok(self.0.fallback_buf.read_buf(buf))
-                    };
-                } else if buf.is_empty() {
-                    return Ok(0);
-                }
-
-                let mut n = self.0.read_inner(buf)?;
-                if self.0.deferred_error.is_some() {
-                    if buf.len() - n >= REPL.len() {
-                        self.0.deferred_error = None;
-                        buf[n..n + REPL.len()].copy_from_slice(REPL);
-                        n += REPL.len();
-                    } else if n == 0 {
-                        self.0.deferred_error = None;
-                        self.0.fallback_buf.fill_from_slice(REPL);
-                        n += self.0.fallback_buf.read_buf(buf);
-                    }
-                }
-                Ok(n)
+                self.0.read_impl::<true, false>(buf)
             }
 
             fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
@@ -223,27 +194,124 @@ impl<R: io::BufRead> DecodingReader<R> {
         LossyReader(self)
     }
 
-    fn read_inner(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        debug_assert!(!buf.is_empty());
-        debug_assert!(self.fallback_buf.is_empty());
-        debug_assert!(self.deferred_error.is_none());
-        let decoder = match self.decoder.as_deref_mut() {
-            Some(t) => t,
-            None => return Ok(0),
-        };
-        let src = self.reader.fill_buf()?;
-        if src.is_empty() {
+    /// Implements [`std::io::Read::read`].
+    ///
+    /// -   `LOSSY` controls whether a malformed byte sequence is replaced with a replacement
+    ///     character (`true`) or reported as an error (`false`).
+    /// -   `FUSED` controls whether the underlying decoder is closed (`true`) or not (`false`)
+    ///     when the underlying reader reports an EOF.
+    fn read_impl<const LOSSY: bool, const FUSED: bool>(
+        &mut self,
+        buf: &mut [u8],
+    ) -> io::Result<usize> {
+        if !self.fallback_buf.is_empty() {
+            // flush internal buffer if it contains leftovers from previous call; return early to
+            // keep this cold path simple even if `buf` has remaining space to read more bytes
+            return Ok(self.fallback_buf.read_buf(buf));
+        } else if let Some(e) = self.deferred_error.take() {
+            return if !LOSSY {
+                // report the error that has been deferred until all the decoded bytes (including
+                // those left in the fallback buffer) are written
+                Err(e.wrap())
+            } else {
+                // write REPLACEMENT CHARACTER and return early because `self.reader.fill_buf()?`
+                // called later may return `Err`
+                const REPL: &[u8] = "\u{FFFD}".as_bytes();
+                if buf.len() >= REPL.len() {
+                    buf[..REPL.len()].copy_from_slice(REPL);
+                    Ok(REPL.len())
+                } else {
+                    self.fallback_buf.fill_from_slice(REPL);
+                    Ok(self.fallback_buf.read_buf(buf))
+                }
+            };
+        } else if self.decoder.is_none() || buf.is_empty() {
+            // stop if decoder is already closed or if input buffer is empty
             return Ok(0);
         }
-        let (result, consumed, written) =
-            decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
-                decoder.decode_to_utf8_without_replacement(src, dst, false)
-            });
-        self.reader.consume(consumed);
 
-        if let encoding_rs::DecoderResult::Malformed(..) = result {
-            self.deferred_error = Some(MalformedError::new());
+        debug_assert!(self.fallback_buf.is_empty());
+        debug_assert!(self.deferred_error.is_none());
+        debug_assert!(self.decoder.is_some() && !buf.is_empty());
+
+        let src = self.reader.fill_buf()?;
+        if src.is_empty() {
+            debug_assert!(self.reader.fallback_buffer().is_empty());
+            return if FUSED {
+                // close decoder when underlying reader reports EOF
+                self.close_decoder::<LOSSY>(buf)
+            } else {
+                Ok(0)
+            };
         }
+
+        let decoder = self.decoder.as_deref_mut().unwrap();
+        let written = if !LOSSY {
+            let (result, consumed, written) =
+                decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
+                    decoder.decode_to_utf8_without_replacement(src, dst, false)
+                });
+            self.reader.consume(consumed);
+
+            if let encoding_rs::DecoderResult::Malformed(..) = result {
+                if written == 0 {
+                    return Err(MalformedError::new().wrap());
+                }
+                // defer error until subsequent call because some bytes were written successfully
+                self.deferred_error = Some(MalformedError::new());
+            }
+
+            written
+        } else {
+            let (_, consumed, written) =
+                decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
+                    let ret = decoder.decode_to_utf8(src, dst, false);
+                    (ret.0, ret.1, ret.2)
+                });
+            self.reader.consume(consumed);
+
+            written
+        };
+
+        debug_assert!(self.check_utf8_guarantee(&buf[..written]).is_ok());
+        if FUSED && written == 0 {
+            // This path is supposed (though not proved) to be unreachable.
+            self.close_decoder::<LOSSY>(buf)
+        } else {
+            Ok(written)
+        }
+    }
+
+    /// Closes and discards the underlying decoder.
+    ///
+    /// This method must be called from within `read_impl` to ensure preconditions.
+    fn close_decoder<const LOSSY: bool>(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        debug_assert!(self.fallback_buf.is_empty());
+        debug_assert!(self.deferred_error.is_none());
+        debug_assert!(self.decoder.is_some() && !buf.is_empty());
+        let mut decoder = self.decoder.take().unwrap();
+        let written = if !LOSSY {
+            let (result, _, written) =
+                decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
+                    decoder.decode_to_utf8_without_replacement(&[], dst, true)
+                });
+
+            if let encoding_rs::DecoderResult::Malformed(..) = result {
+                if written == 0 {
+                    return Err(MalformedError::new().wrap());
+                }
+                self.deferred_error = Some(MalformedError::new());
+            }
+
+            written
+        } else {
+            let (_, _, written) = decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
+                let ret = decoder.decode_to_utf8(&[], dst, true);
+                (ret.0, ret.1, ret.2)
+            });
+
+            written
+        };
 
         debug_assert!(self.check_utf8_guarantee(&buf[..written]).is_ok());
         Ok(written)
@@ -272,25 +340,7 @@ impl<R: io::BufRead> ReadToStringAdapter for DecodingReader<R> {
 
 impl<R: io::BufRead> io::Read for DecodingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if !self.fallback_buf.is_empty() {
-            // flush internal buffer if it contains leftovers from previous call; return early to
-            // keep this cold path simple even if `buf` has remaining space to read more bytes
-            return Ok(self.fallback_buf.read_buf(buf));
-        } else if let Some(e) = self.deferred_error.take() {
-            // report the error that has been deferred until all the decoded bytes (including those
-            // left in the fallback buffer) are written
-            return Err(e.wrap());
-        } else if buf.is_empty() {
-            // `io::Read` may return `Ok(0)` if output buffer is 0 bytes in length
-            return Ok(0);
-        }
-        match self.read_inner(buf) {
-            Ok(0) => match self.deferred_error.take() {
-                None => Ok(0),
-                Some(e) => Err(e.wrap()),
-            },
-            ret => ret,
-        }
+        self.read_impl::<false, false>(buf)
     }
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
