@@ -47,7 +47,7 @@ use super::MalformedError;
 #[derive(Debug)]
 pub struct DecodingReader<R> {
     reader: super::util::BufReadWithFallbackBuffer<R>,
-    decoder: super::util::DebuggableDecoder,
+    decoder: Option<super::util::DebuggableDecoder>,
     /// A tiny backup buffer used when the buffer supplied by the caller is so small that the
     /// decoder might be unable to write a single UTF-8 character.
     fallback_buf: super::util::MiniBuffer,
@@ -62,7 +62,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     pub fn new(reader: R, decoder: Decoder) -> Self {
         Self {
             reader: reader.into(),
-            decoder: decoder.into(),
+            decoder: Some(decoder.into()),
             fallback_buf: Default::default(),
             deferred_error: None,
         }
@@ -73,9 +73,9 @@ impl<R: io::BufRead> DecodingReader<R> {
         self.reader.as_inner()
     }
 
-    /// Returns a reference to the underlying decoder.
-    pub fn decoder_ref(&self) -> &Decoder {
-        &self.decoder
+    /// Returns a reference to the underlying decoder if it is still active or `None` otherwise.
+    pub fn decoder_ref(&self) -> Option<&Decoder> {
+        self.decoder.as_deref()
     }
 
     /// Notifies the underlying decoder of the end of input stream, dropping it and returning the
@@ -84,20 +84,18 @@ impl<R: io::BufRead> DecodingReader<R> {
     pub fn finish(mut self) -> (R, Vec<u8>, io::Result<()>) {
         let src_rem = self.reader.fallback_buffer();
         let dst_rem = self.fallback_buf.as_ref();
+        let decoder = self.decoder.as_deref_mut().unwrap();
         let mut remainder = vec![
             0;
             dst_rem.len()
-                + self
-                    .decoder
+                + decoder
                     .max_utf8_buffer_length_without_replacement(src_rem.len())
                     .unwrap()
         ];
 
         let (a, b) = remainder.split_at_mut(dst_rem.len());
         a.copy_from_slice(dst_rem);
-        let (result, _, written) = self
-            .decoder
-            .decode_to_utf8_without_replacement(src_rem, b, true);
+        let (result, _, written) = decoder.decode_to_utf8_without_replacement(src_rem, b, true);
         remainder.truncate(dst_rem.len() + written);
 
         use encoding_rs::DecoderResult::{InputEmpty, Malformed};
@@ -135,8 +133,9 @@ impl<R: io::BufRead> DecodingReader<R> {
         }
 
         let src_rem = self.reader.fallback_buffer();
-        buf.reserve(self.decoder.max_utf8_buffer_length(src_rem.len()).unwrap());
-        let (result, _, _) = self.decoder.decode_to_string(src_rem, buf, true);
+        let decoder = self.decoder.as_deref_mut().unwrap();
+        buf.reserve(decoder.max_utf8_buffer_length(src_rem.len()).unwrap());
+        let (result, _, _) = decoder.decode_to_string(src_rem, buf, true);
         debug_assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
 
         Ok(self.reader.destroy())
@@ -228,26 +227,18 @@ impl<R: io::BufRead> DecodingReader<R> {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.fallback_buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
-
+        let decoder = match self.decoder.as_deref_mut() {
+            Some(t) => t,
+            None => return Ok(0),
+        };
         let src = self.reader.fill_buf()?;
         if src.is_empty() {
             return Ok(0);
         }
-        let (result, consumed, written) = if buf.len() > self.fallback_buf.spare_capacity_len() {
-            self.decoder
-                .decode_to_utf8_without_replacement(src, buf, false)
-        } else {
-            // use fallback buffer if `buf` may be too small to call decoder method
-            let fallback_buf = self.fallback_buf.spare_capacity_mut();
-            let (result, consumed, mut written) =
-                self.decoder
-                    .decode_to_utf8_without_replacement(src, fallback_buf, false);
-            if written > 0 {
-                self.fallback_buf.add_len(written);
-                written = self.fallback_buf.read_buf(buf);
-            }
-            (result, consumed, written)
-        };
+        let (result, consumed, written) =
+            decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
+                decoder.decode_to_utf8_without_replacement(src, dst, false)
+            });
         self.reader.consume(consumed);
 
         if let encoding_rs::DecoderResult::Malformed(..) = result {
@@ -352,6 +343,28 @@ fn read_to_string_impl(
             io::ErrorKind::Other,
             "failed to read to string unexpectedly",
         ))
+    }
+}
+
+/// Executes the specified decoder method but uses the fallback buffer is the destination buffer
+/// may be too small to call the decoder method.
+///
+/// This function assumes that the fallback buffer is empty.
+fn decode_with_fallback_buf<T>(
+    dst_buf: &mut [u8],
+    fallback_buf: &mut super::util::MiniBuffer,
+    mut decode: impl FnMut(&mut [u8]) -> (T, usize, usize),
+) -> (T, usize, usize) {
+    debug_assert!(fallback_buf.is_empty());
+    if dst_buf.len() > fallback_buf.spare_capacity_len() {
+        decode(dst_buf)
+    } else {
+        let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
+        if written > 0 {
+            fallback_buf.add_len(written);
+            written = fallback_buf.read_buf(dst_buf);
+        }
+        (result, consumed, written)
     }
 }
 
