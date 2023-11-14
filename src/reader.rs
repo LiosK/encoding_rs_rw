@@ -93,69 +93,6 @@ impl<R: io::BufRead> DecodingReader<R> {
         )
     }
 
-    /// Notifies the underlying decoder of the end of input stream, dropping it and returning the
-    /// underlying reader, any unread bytes left in `self`, and any error reported at the end of
-    /// input byte sequence.
-    pub fn finish(mut self) -> (R, Vec<u8>, io::Result<()>) {
-        let src_rem = self.reader.fallback_buffer();
-        let dst_rem = self.fallback_buf.as_ref();
-        let decoder = self.decoder.as_deref_mut().unwrap();
-        let mut remainder = vec![
-            0;
-            dst_rem.len()
-                + decoder
-                    .max_utf8_buffer_length_without_replacement(src_rem.len())
-                    .unwrap()
-        ];
-
-        let (a, b) = remainder.split_at_mut(dst_rem.len());
-        a.copy_from_slice(dst_rem);
-        let (result, _, written) = decoder.decode_to_utf8_without_replacement(src_rem, b, true);
-        remainder.truncate(dst_rem.len() + written);
-
-        use encoding_rs::DecoderResult::{InputEmpty, Malformed};
-        (
-            self.reader.destroy(),
-            remainder,
-            match result {
-                InputEmpty => self.deferred_error.map_or(Ok(()), |e| Err(e.wrap())),
-                Malformed(..) if self.deferred_error.is_none() => Err(MalformedError::new().wrap()),
-                _ => {
-                    debug_assert!(false, "unreachable");
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "failed to finish decoder unexpectedly",
-                    ))
-                }
-            },
-        )
-    }
-
-    /// Notifies the underlying decoder of the end of input stream, appending a replacement
-    /// character to the specified buffer where applicable.
-    ///
-    /// This method appends any unread bytes left in `self` and a replacement character for a
-    /// malformed byte sequence found at the end of the input stream to `buf` and then returns the
-    /// underlying reader. It returns `Err` and unconsumed `self` if the decoding reader is in an
-    /// incomplete state and is not able to append unread bytes to the string buffer.
-    pub fn finish_lossy(mut self, buf: &mut String) -> Result<R, Self> {
-        match str::from_utf8(self.fallback_buf.as_ref()) {
-            Err(_) => return Err(self),
-            Ok(t) => buf.push_str(t),
-        }
-        if self.deferred_error.is_some() {
-            buf.push('\u{FFFD}');
-        }
-
-        let src_rem = self.reader.fallback_buffer();
-        let decoder = self.decoder.as_deref_mut().unwrap();
-        buf.reserve(decoder.max_utf8_buffer_length(src_rem.len()).unwrap());
-        let (result, _, _) = decoder.decode_to_string(src_rem, buf, true);
-        debug_assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
-
-        Ok(self.reader.destroy())
-    }
-
     /// Returns a variant of this decoding reader that replaces a detected malformed byte sequence
     /// with a replacement character (U+FFFD) instead of reporting a `MalformedError`.
     ///
@@ -243,7 +180,6 @@ impl<R: io::BufRead> DecodingReader<R> {
 
         let src = self.reader.fill_buf()?;
         if src.is_empty() {
-            debug_assert!(self.reader.fallback_buffer().is_empty());
             return if FUSED {
                 // close decoder when underlying reader reports EOF
                 self.close_decoder::<LOSSY>(buf)

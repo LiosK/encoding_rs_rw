@@ -105,17 +105,8 @@ impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
         &self.inner
     }
 
-    pub fn fallback_buffer(&self) -> &[u8] {
-        self.fallback_buf.as_ref()
-    }
-
     pub fn into_parts(self) -> (R, MiniBuffer) {
         (self.inner, self.fallback_buf)
-    }
-
-    /// Returns the inner reader, discarding the fallback buffer content.
-    pub fn destroy(self) -> R {
-        self.inner
     }
 
     pub fn fill_buf(&mut self) -> io::Result<&[u8]> {
