@@ -117,25 +117,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     pub fn lossy(&mut self) -> impl io::Read + '_ {
-        struct LossyReader<'a, R>(&'a mut DecodingReader<R>);
-
-        impl<R: io::BufRead> ReadToStringAdapter for LossyReader<'_, R> {
-            fn has_read_valid_utf8(&self) -> bool {
-                self.0.has_read_valid_utf8()
-            }
-        }
-
-        impl<R: io::BufRead> io::Read for LossyReader<'_, R> {
-            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-                self.0.read_impl::<true, true>(buf)
-            }
-
-            fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
-                read_to_string_impl(self, buf)
-            }
-        }
-
-        LossyReader(self)
+        VariantReader::<'_, _, true, true> { inner: self }
     }
 
     /// Implements [`std::io::Read::read`].
@@ -284,6 +266,31 @@ impl<R: io::BufRead> ReadToStringAdapter for DecodingReader<R> {
 impl<R: io::BufRead> io::Read for DecodingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read_impl::<false, true>(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        read_to_string_impl(self, buf)
+    }
+}
+
+/// A borrowing reader type that provides lossy and/or unfused variants.
+struct VariantReader<'a, R, const LOSSY: bool, const FUSED: bool> {
+    inner: &'a mut DecodingReader<R>,
+}
+
+impl<R: io::BufRead, const LOSSY: bool, const FUSED: bool> ReadToStringAdapter
+    for VariantReader<'_, R, LOSSY, FUSED>
+{
+    fn has_read_valid_utf8(&self) -> bool {
+        self.inner.has_read_valid_utf8()
+    }
+}
+
+impl<R: io::BufRead, const LOSSY: bool, const FUSED: bool> io::Read
+    for VariantReader<'_, R, LOSSY, FUSED>
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read_impl::<LOSSY, FUSED>(buf)
     }
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
