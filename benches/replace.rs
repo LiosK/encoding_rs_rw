@@ -19,7 +19,6 @@ fn reader_lossy(b: &mut test::Bencher) {
         let mut dst = String::new();
         let mut reader = DecodingReader::new(&src[..], UTF_8.new_decoder());
         reader.lossy().read_to_string(&mut dst).unwrap();
-        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });
@@ -39,7 +38,6 @@ fn reader_manual_naive(b: &mut test::Bencher) {
                 Err(_) => unreachable!(),
             }
         }
-        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });
@@ -87,7 +85,6 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
                 }
             }
         }
-        reader.finish_lossy(&mut dst).unwrap();
 
         assert_eq!(dst, expected);
     });

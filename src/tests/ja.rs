@@ -14,7 +14,6 @@ fn reader_high_level_api() {
             let mut dst = String::new();
             reader.read_to_string(&mut dst).unwrap();
             assert_eq!(dst, c.decoded());
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
         }
     });
 }
@@ -32,7 +31,6 @@ fn lossy_reader_high_level_api() {
                 reader.read_to_string(&mut dst).unwrap();
                 assert_eq!(dst, c.decoded());
             }
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
         }
     });
 }
@@ -70,7 +68,6 @@ fn reader_byte_by_byte() {
                 }
             }
             assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
         }
     });
 }
@@ -97,7 +94,6 @@ fn lossy_reader_byte_by_byte() {
                 }
                 assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
             }
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
         }
     });
 }
@@ -154,7 +150,6 @@ fn reader_malformed_bytes() {
                             }
                         }
                         assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         dst
                     };
                     assert_eq!(actual, expected);
@@ -176,7 +171,6 @@ fn reader_malformed_bytes() {
                                 ret => panic!("assertion failed: {:?}", ret),
                             }
                         }
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         String::from_utf8(dst).unwrap()
                     };
                     assert_eq!(actual_byte_by_byte, expected);
@@ -186,7 +180,6 @@ fn reader_malformed_bytes() {
                         let mut dst = String::new();
                         reader.lossy().read_to_string(&mut dst).unwrap();
                         assert!(matches!(reader.lossy().read(&mut [0; 64]), Ok(0)));
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         dst
                     };
                     assert_eq!(actual_lossy, expected);
@@ -205,7 +198,6 @@ fn reader_malformed_bytes() {
                                 ret => panic!("assertion failed: {:?}", ret),
                             }
                         }
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         String::from_utf8(dst).unwrap()
                     };
                     assert_eq!(actual_lossy_byte_by_byte, expected);
