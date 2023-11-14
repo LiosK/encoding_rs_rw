@@ -78,6 +78,23 @@ impl<R: io::BufRead> DecodingReader<R> {
         self.decoder.as_deref()
     }
 
+    /// Takes the underlying reader out of the structure.
+    ///
+    /// In addition to the underlying reader, this method returns a _leftover_ reader that delivers
+    /// the bytes already consumed from the underlying reader but not yet read by the caller.
+    pub fn take_reader(self) -> (R, DecodingReader<impl io::BufRead>) {
+        let (reader, remainder) = self.reader.into_parts();
+        (
+            reader,
+            DecodingReader {
+                reader: io::Cursor::new(remainder).into(),
+                decoder: self.decoder,
+                fallback_buf: self.fallback_buf,
+                deferred_error: self.deferred_error,
+            },
+        )
+    }
+
     /// Notifies the underlying decoder of the end of input stream, dropping it and returning the
     /// underlying reader, any unread bytes left in `self`, and any error reported at the end of
     /// input byte sequence.
