@@ -33,7 +33,7 @@ const MIN_BUF_SIZE: usize = 32;
 /// input buffer is _fully consumed_ (i.e., when [`write_all`] or [`write!`] returns `Ok(())` or
 /// when the cumulative sum of `Ok(n)` returned by [`write`] indicates the completion). It is
 /// recommended to call [`flush`] and [`finish`] at the end of the input to handle such a trailing
-/// error.
+/// error explicitly.
 ///
 /// [`BufWriter`]: io::BufWriter
 /// [`write_str`]: Self::write_str

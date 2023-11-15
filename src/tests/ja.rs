@@ -35,6 +35,40 @@ fn lossy_reader_high_level_api() {
     });
 }
 
+/// Tests the unfused reader's high level API usage.
+#[test]
+fn unfused_reader_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader =
+                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+            {
+                let mut reader = reader.unfused();
+                let mut dst = String::new();
+                reader.read_to_string(&mut dst).unwrap();
+                assert_eq!(dst, c.decoded());
+            }
+        }
+    });
+}
+
+/// Tests the lossy unfused reader's high level API usage.
+#[test]
+fn lossy_unfused_reader_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader =
+                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+            {
+                let mut reader = reader.lossy_unfused();
+                let mut dst = String::new();
+                reader.read_to_string(&mut dst).unwrap();
+                assert_eq!(dst, c.decoded());
+            }
+        }
+    });
+}
+
 /// Tests the writer's high level API usage.
 #[test]
 fn writer_high_level_api() {
@@ -83,6 +117,58 @@ fn lossy_reader_byte_by_byte() {
             );
             {
                 let mut reader = reader.lossy();
+                let mut dst = Vec::with_capacity(c.decoded().len());
+                let mut buf = [0u8; 1];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => dst.extend(&buf[..n]),
+                        ret => panic!("assertion failed: {:?}", ret),
+                    }
+                }
+                assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
+            }
+        }
+    });
+}
+
+/// Tests the unfused reader for byte-by-byte streaming.
+#[test]
+fn unfused_reader_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader = DecodingReader::new(
+                io::BufReader::with_capacity(1, c.encoded()),
+                c.encoding.new_decoder(),
+            );
+            {
+                let mut reader = reader.unfused();
+                let mut dst = Vec::with_capacity(c.decoded().len());
+                let mut buf = [0u8; 1];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => dst.extend(&buf[..n]),
+                        ret => panic!("assertion failed: {:?}", ret),
+                    }
+                }
+                assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
+            }
+        }
+    });
+}
+
+/// Tests the lossy unfused reader for byte-by-byte streaming.
+#[test]
+fn lossy_unfused_reader_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader = DecodingReader::new(
+                io::BufReader::with_capacity(1, c.encoded()),
+                c.encoding.new_decoder(),
+            );
+            {
+                let mut reader = reader.lossy_unfused();
                 let mut dst = Vec::with_capacity(c.decoded().len());
                 let mut buf = [0u8; 1];
                 loop {
@@ -201,6 +287,73 @@ fn reader_malformed_bytes() {
                         String::from_utf8(dst).unwrap()
                     };
                     assert_eq!(actual_lossy_byte_by_byte, expected);
+
+                    let actual_unfused = {
+                        let mut reader = DecodingReader::new(b.encoded(), a.encoding.new_decoder());
+                        let mut dst = String::new();
+                        while let Err(io_error) = reader.unfused().read_to_string(&mut dst) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.push('�');
+                            } else {
+                                unreachable!();
+                            }
+                        }
+                        assert!(matches!(reader.unfused().read(&mut [0; 64]), Ok(0)));
+                        // TODO finish decoder
+                        dst
+                    };
+                    assert_eq!(actual_unfused, expected);
+
+                    let actual_unfused_byte_by_byte = {
+                        let mut reader = DecodingReader::new(
+                            io::BufReader::with_capacity(1, b.encoded()),
+                            a.encoding.new_decoder(),
+                        );
+                        let mut dst = Vec::new();
+                        let mut buf = [0u8; 1];
+                        loop {
+                            match reader.unfused().read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => dst.extend(&buf[..n]),
+                                Err(e) if MalformedError::wrapped_in(&e).is_some() => {
+                                    dst.extend("�".as_bytes())
+                                }
+                                ret => panic!("assertion failed: {:?}", ret),
+                            }
+                        }
+                        // TODO finish decoder
+                        String::from_utf8(dst).unwrap()
+                    };
+                    assert_eq!(actual_unfused_byte_by_byte, expected);
+
+                    let actual_lossy_unfused = {
+                        let mut reader = DecodingReader::new(b.encoded(), a.encoding.new_decoder());
+                        let mut dst = String::new();
+                        reader.lossy_unfused().read_to_string(&mut dst).unwrap();
+                        assert!(matches!(reader.lossy().read(&mut [0; 64]), Ok(0)));
+                        // TODO finish decoder
+                        dst
+                    };
+                    assert_eq!(actual_lossy_unfused, expected);
+
+                    let actual_lossy_unfused_byte_by_byte = {
+                        let mut reader = DecodingReader::new(
+                            io::BufReader::with_capacity(1, b.encoded()),
+                            a.encoding.new_decoder(),
+                        );
+                        let mut dst = Vec::new();
+                        let mut buf = [0u8; 1];
+                        loop {
+                            match reader.lossy_unfused().read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => dst.extend(&buf[..n]),
+                                ret => panic!("assertion failed: {:?}", ret),
+                            }
+                        }
+                        // TODO finish decoder
+                        String::from_utf8(dst).unwrap()
+                    };
+                    assert_eq!(actual_lossy_unfused_byte_by_byte, expected);
                 }
             }
         }
