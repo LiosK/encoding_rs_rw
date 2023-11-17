@@ -65,14 +65,12 @@ const MIN_BUF_SIZE: usize = 32;
 /// ```
 #[derive(Debug)]
 pub struct EncodingWriter<W: io::Write> {
-    writer: W,
+    writer: BufferedWriter<W>,
     encoder: super::util::DebuggableEncoder,
-    encoded_buf: Vec<u8>,
     /// Storage to carry an error from one write call to the next, used to tentatively return `Ok`
     /// (as per the contract) after consuming erroneous input and report the error at the beginning
     /// of the subsequent call.
     deferred_error: Option<DefErr>,
-    writer_panicked: bool,
 }
 
 impl<W: io::Write> EncodingWriter<W> {
@@ -90,17 +88,15 @@ impl<W: io::Write> EncodingWriter<W> {
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
         Self {
-            writer,
+            writer: BufferedWriter::with_capacity(capacity, writer),
             encoder: encoder.into(),
-            encoded_buf: Vec::with_capacity(capacity.max(MIN_BUF_SIZE)),
             deferred_error: None,
-            writer_panicked: false,
         }
     }
 
     /// Returns a reference to the underlying writer.
     pub fn writer_ref(&self) -> &W {
-        &self.writer
+        self.writer.get_ref()
     }
 
     /// Returns a reference to the underlying encoder.
@@ -115,16 +111,14 @@ impl<W: io::Write> EncodingWriter<W> {
     /// It is recommended to call `flush` first because this method does not flush the internal
     /// buffer.
     pub fn finish(mut self) -> (W, Vec<u8>, io::Result<()>) {
-        self.encoded_buf.reserve(
+        let mut temp_buf = Vec::with_capacity(
             self.encoder
                 .max_buffer_length_from_utf8_without_replacement(0)
                 .unwrap(),
         );
-        let (result, _) = self.encoder.encode_from_utf8_to_vec_without_replacement(
-            "",
-            &mut self.encoded_buf,
-            true,
-        );
+        let (result, _) =
+            self.encoder
+                .encode_from_utf8_to_vec_without_replacement("", &mut temp_buf, true);
 
         let deferred_error = match result {
             encoding_rs::EncoderResult::InputEmpty => self.realize_any_deferred_error(),
@@ -137,16 +131,10 @@ impl<W: io::Write> EncodingWriter<W> {
             }
         };
 
-        // destruct `self`, moving out some fields and dropping the rest
-        let (writer, encoded_buf) = unsafe {
-            let mut m = mem::ManuallyDrop::new(self);
-            ptr::drop_in_place(&mut m.encoder);
-            ptr::drop_in_place(&mut m.deferred_error);
-            ptr::drop_in_place(&mut m.writer_panicked);
-            (ptr::read(&m.writer), ptr::read(&m.encoded_buf))
-        };
+        let (writer, mut buffer) = self.writer.into_parts();
+        buffer.extend(temp_buf);
 
-        (writer, encoded_buf, deferred_error)
+        (writer, buffer, deferred_error)
     }
 
     /// Writes a string slice into this writer, returning how many input bytes were consumed.
@@ -171,7 +159,7 @@ impl<W: io::Write> EncodingWriter<W> {
             // writing another valid `&str`
             self.realize_any_deferred_error()?;
         }
-        self.reserve_buffer_capacity(MIN_BUF_SIZE)?;
+        self.writer.try_reserve(MIN_BUF_SIZE, None)?;
         Ok(self.write_str_inner(buf))
     }
 
@@ -296,13 +284,19 @@ impl<W: io::Write> EncodingWriter<W> {
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
-        debug_assert!(self.encoded_buf.capacity() - self.encoded_buf.len() >= MIN_BUF_SIZE);
+        debug_assert!(self.writer.unfilled().len() >= MIN_BUF_SIZE);
 
-        let (result, consumed) = self.encoder.encode_from_utf8_to_vec_without_replacement(
+        // SAFETY: `mem::transmute` is generally okay because `&[T]` and `&[MaybeUninit<T>]` have
+        // the same layout and `u8` is a trivial type. It is technically UB to create a mutable
+        // reference to an uninitialized byte buffer and pass it to a supposedly write-only
+        // function, though the following code mimics the approach taken by `encoding_rs` to
+        // implement the `encode_from_utf8_to_vec_*` methods.
+        let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
             buf,
-            &mut self.encoded_buf,
+            unsafe { mem::transmute(self.writer.unfilled()) },
             false,
         );
+        unsafe { self.writer.advance(written) };
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
 
@@ -338,60 +332,6 @@ impl<W: io::Write> EncodingWriter<W> {
             _ => self.realize_any_deferred_error(),
         }
     }
-
-    fn reserve_buffer_capacity(&mut self, additional: usize) -> io::Result<()> {
-        if self.encoded_buf.capacity() - self.encoded_buf.len() < additional {
-            self.flush_buffer()?;
-        }
-        debug_assert!(
-            self.encoded_buf.capacity() - self.encoded_buf.len() >= additional
-                || self.encoded_buf.is_empty()
-        );
-        Ok(())
-    }
-
-    /// Writes the buffered data into the underlying writer.
-    fn flush_buffer(&mut self) -> io::Result<()> {
-        // A guard struct to make sure to remove consumed bytes from the buffer when dropped.
-        struct PanicGuard<'a> {
-            consumed: usize,
-            buffer: &'a mut Vec<u8>,
-        }
-
-        impl Drop for PanicGuard<'_> {
-            fn drop(&mut self) {
-                if self.consumed < self.buffer.len() {
-                    self.buffer.drain(..self.consumed);
-                } else {
-                    self.buffer.clear();
-                }
-            }
-        }
-
-        let mut g = PanicGuard {
-            consumed: 0,
-            buffer: &mut self.encoded_buf,
-        };
-
-        while g.consumed < g.buffer.len() {
-            self.writer_panicked = true;
-            let ret = self.writer.write(&g.buffer[g.consumed..]);
-            self.writer_panicked = false;
-
-            match ret {
-                Ok(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "failed to write buffered data to underlying writer",
-                    ));
-                }
-                Ok(n) => g.consumed += n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
 }
 
 impl<W: io::Write> WriteFmtAdapter for EncodingWriter<W> {
@@ -407,7 +347,7 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
         if buf.is_empty() {
             return Ok(0);
         }
-        self.reserve_buffer_capacity(MIN_BUF_SIZE)?;
+        self.writer.try_reserve(MIN_BUF_SIZE, None)?;
 
         Ok(match self.deferred_error.take() {
             None => match str_from_utf8_up_to_error(buf) {
@@ -461,22 +401,12 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.realize_any_deferred_error()?;
-        self.flush_buffer()?;
         self.writer.flush()
     }
 
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
         self.realize_deferred_error_except_incomplete_utf8()?;
         write_fmt_impl(self, f)
-    }
-}
-
-impl<W: io::Write> Drop for EncodingWriter<W> {
-    fn drop(&mut self) {
-        // don't double-flush the buffer when the inner writer panicked in a call to write
-        if !self.writer_panicked {
-            let _ = self.flush_buffer();
-        }
     }
 }
 
@@ -509,26 +439,7 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
         } else {
             self.0.realize_any_deferred_error()?;
         }
-        self.0.reserve_buffer_capacity(buf.len())?;
-
-        if buf.len() > self.0.encoded_buf.capacity() {
-            // bypass internal buffer if input buffer is large
-            assert!(self.0.encoded_buf.is_empty());
-            self.0.writer_panicked = true;
-            let ret = self.0.writer.write(buf);
-            self.0.writer_panicked = false;
-            ret
-        } else {
-            let old_len = self.0.encoded_buf.len();
-            let new_len = old_len + buf.len();
-            assert!(new_len <= self.0.encoded_buf.capacity());
-            // SAFETY: ok because copy_from_slice overwrites uninitialized area
-            unsafe {
-                self.0.encoded_buf.set_len(new_len);
-                self.0.encoded_buf[old_len..].copy_from_slice(buf);
-            }
-            Ok(buf.len())
-        }
+        self.0.writer.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -599,6 +510,173 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
             } else {
                 Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
             }
+        }
+    }
+}
+
+/// A trait abstracting the byte buffer that exposes its unfilled capacity as a slice.
+trait BufferCursor<Error> {
+    /// Returns the unfilled buffer capacity as a slice.
+    ///
+    /// The caller must [`advance`](Self::advance) the cursor after writing initialized data into
+    /// the returned buffer.
+    fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>];
+
+    /// Marks the first `n` bytes of the unfilled buffer as filled.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    ///
+    /// -  `n` is less than or equal to the length of the unfilled buffer.
+    /// -  The first `n` bytes of the unfilled buffer is properly initialized.
+    unsafe fn advance(&mut self, n: usize);
+
+    /// Tries to reserve capacity for at least `minimum` more bytes.
+    ///
+    /// When this method returns `Ok(())`, the implementation must ensure the length of the slice
+    /// returned by `unfilled` is `minimum` or greater. The implementation may speculatively
+    /// reserve more space than `minimum` and is encouraged to reserve more than the `size_hint`
+    /// provided by the caller, though it may end up reserving less space than `size_hint` (but not
+    /// less than `minimum`). The implementation must return `Err` if it cannot reserve space of
+    /// `minimum` bytes and may also report `Err` if it encounters an error in reallocating memory,
+    /// flushing the existing content, or any other operations.
+    fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> Result<(), Error>;
+}
+
+/// A `BufWriter`-like type that exposes its unfilled capacity as a slice.
+#[derive(Debug)]
+struct BufferedWriter<W: io::Write> {
+    buffer: Vec<u8>,
+    panicked: bool,
+    inner: W,
+}
+
+impl<W: io::Write> BufferedWriter<W> {
+    fn with_capacity(capacity: usize, inner: W) -> Self {
+        Self {
+            buffer: Vec::with_capacity(capacity.max(MIN_BUF_SIZE)),
+            panicked: false,
+            inner,
+        }
+    }
+
+    fn get_ref(&self) -> &W {
+        &self.inner
+    }
+
+    fn into_parts(self) -> (W, Vec<u8>) {
+        // destruct `self`, moving out some fields and dropping the rest
+        unsafe {
+            let mut m = mem::ManuallyDrop::new(self);
+            ptr::drop_in_place(&mut m.panicked);
+            (ptr::read(&m.inner), ptr::read(&m.buffer))
+        }
+    }
+
+    /// Writes the buffered data into the underlying writer.
+    fn flush_buffer(&mut self) -> io::Result<()> {
+        // A guard struct to make sure to remove consumed bytes from the buffer when dropped.
+        struct PanicGuard<'a> {
+            consumed: usize,
+            buffer: &'a mut Vec<u8>,
+        }
+
+        impl Drop for PanicGuard<'_> {
+            fn drop(&mut self) {
+                if self.consumed < self.buffer.len() {
+                    self.buffer.drain(..self.consumed);
+                } else {
+                    self.buffer.clear();
+                }
+            }
+        }
+
+        let mut g = PanicGuard {
+            consumed: 0,
+            buffer: &mut self.buffer,
+        };
+
+        while g.consumed < g.buffer.len() {
+            self.panicked = true;
+            let ret = self.inner.write(&g.buffer[g.consumed..]);
+            self.panicked = false;
+
+            match ret {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "failed to write buffered data to writer",
+                    ));
+                }
+                Ok(n) => g.consumed += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<W: io::Write> Drop for BufferedWriter<W> {
+    fn drop(&mut self) {
+        // don't double-flush the buffer when the inner writer panicked in a call to write
+        if !self.panicked {
+            let _ = self.flush_buffer();
+        }
+    }
+}
+
+impl<W: io::Write> io::Write for BufferedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.try_reserve(MIN_BUF_SIZE, Some(buf.len()))?;
+        let capacity = self.unfilled().len();
+        if buf.len() > capacity && self.buffer.is_empty() {
+            // bypass the internal buffer if the input buffer is large
+            self.panicked = true;
+            let ret = self.inner.write(buf);
+            self.panicked = false;
+            ret
+        } else {
+            let n = buf.len().min(capacity);
+            // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
+            self.unfilled()[..n].copy_from_slice(unsafe { mem::transmute(&buf[..n]) });
+            // SAFETY: `n` elements have just been initialized by `copy_from_slice`
+            unsafe { self.advance(n) };
+            Ok(n)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush_buffer()?;
+        self.inner.flush()
+    }
+}
+
+impl<W: io::Write> BufferCursor<io::Error> for BufferedWriter<W> {
+    fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
+        self.buffer.spare_capacity_mut()
+    }
+
+    unsafe fn advance(&mut self, n: usize) {
+        assert!(self.buffer.len() + n <= self.buffer.capacity());
+        self.buffer.set_len(self.buffer.len() + n);
+    }
+
+    fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
+        if self.buffer.capacity() - self.buffer.len()
+            < size_hint.map_or(minimum, |n| n.max(minimum))
+        {
+            self.flush_buffer()?;
+        }
+        if self.buffer.capacity() - self.buffer.len() >= minimum {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to reserve minimum buffer capacity",
+            ))
         }
     }
 }
