@@ -45,7 +45,7 @@ pub use writer::EncodingWriter;
 
 /// Miscellaneous types not intended for direct access by name.
 pub mod misc {
-    pub use super::writer::PassthroughWriter;
+    pub use super::writer::{BufferedWrite, BufferedWriter, PassthroughWriter};
 }
 
 #[cfg(test)]

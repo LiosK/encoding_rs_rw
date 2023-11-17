@@ -64,8 +64,8 @@ const MIN_BUF_SIZE: usize = 32;
 /// # Ok::<(), std::io::Error>(())
 /// ```
 #[derive(Debug)]
-pub struct EncodingWriter<W: io::Write> {
-    writer: BufferedWriter<W>,
+pub struct EncodingWriter<B> {
+    buffer: B,
     encoder: super::util::DebuggableEncoder,
     /// Storage to carry an error from one write call to the next, used to tentatively return `Ok`
     /// (as per the contract) after consuming erroneous input and report the error at the beginning
@@ -73,7 +73,7 @@ pub struct EncodingWriter<W: io::Write> {
     deferred_error: Option<DefErr>,
 }
 
-impl<W: io::Write> EncodingWriter<W> {
+impl<W: io::Write> EncodingWriter<BufferedWriter<W>> {
     /// Creates a new encoding writer from a writer and an encoder.
     pub fn new(writer: W, encoder: Encoder) -> Self {
         // As of Rust 1.73.0: https://github.com/rust-lang/rust/blob/1.73.0/library/std/src/sys_common/io.rs#L3
@@ -87,21 +87,13 @@ impl<W: io::Write> EncodingWriter<W> {
 
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
-        Self {
-            writer: BufferedWriter::with_capacity(capacity.max(MIN_BUF_SIZE), writer),
-            encoder: encoder.into(),
-            deferred_error: None,
-        }
+        let c = capacity.max(MIN_BUF_SIZE);
+        Self::with_buffer(BufferedWriter::with_capacity(c, writer), encoder)
     }
 
     /// Returns a reference to the underlying writer.
     pub fn writer_ref(&self) -> &W {
-        self.writer.get_ref()
-    }
-
-    /// Returns a reference to the underlying encoder.
-    pub fn encoder_ref(&self) -> &Encoder {
-        &self.encoder
+        self.buffer.get_ref()
     }
 
     /// Notifies the underlying encoder of the end of input stream, dropping it and returning the
@@ -131,10 +123,31 @@ impl<W: io::Write> EncodingWriter<W> {
             }
         };
 
-        let (writer, mut buffer) = self.writer.into_parts();
+        let (writer, mut buffer) = self.buffer.into_parts();
         buffer.extend(temp_buf);
 
         (writer, buffer, deferred_error)
+    }
+}
+
+impl<B: BufferedWrite> EncodingWriter<B> {
+    /// Creates a new encoding writer from a buffer and an encoder.
+    pub fn with_buffer(buffer: B, encoder: Encoder) -> Self {
+        Self {
+            buffer,
+            encoder: encoder.into(),
+            deferred_error: None,
+        }
+    }
+
+    /// Returns a reference to the underlying buffer.
+    pub fn buffer_ref(&self) -> &B {
+        &self.buffer
+    }
+
+    /// Returns a reference to the underlying encoder.
+    pub fn encoder_ref(&self) -> &Encoder {
+        &self.encoder
     }
 
     /// Writes a string slice into this writer, returning how many input bytes were consumed.
@@ -159,7 +172,7 @@ impl<W: io::Write> EncodingWriter<W> {
             // writing another valid `&str`
             self.realize_any_deferred_error()?;
         }
-        self.writer.try_reserve(MIN_BUF_SIZE, None)?;
+        self.buffer.try_reserve(MIN_BUF_SIZE, None)?;
         Ok(self.write_str_inner(buf))
     }
 
@@ -187,7 +200,7 @@ impl<W: io::Write> EncodingWriter<W> {
     /// assert_eq!(writer.writer_ref(), br"\U0001F602");
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn passthrough(&mut self) -> PassthroughWriter<W> {
+    pub fn passthrough(&mut self) -> PassthroughWriter<B> {
         PassthroughWriter(self)
     }
 
@@ -229,13 +242,13 @@ impl<W: io::Write> EncodingWriter<W> {
     /// ```
     pub fn with_unmappable_handler<'a>(
         &'a mut self,
-        handler: impl FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()> + 'a,
+        handler: impl FnMut(UnmappableError, &mut PassthroughWriter<B>) -> io::Result<()> + 'a,
     ) -> impl io::Write + '_ {
-        struct WithUnmappableHandlerWriter<'a, W: io::Write, H>(&'a mut EncodingWriter<W>, H);
+        struct WithUnmappableHandlerWriter<'a, B, H>(&'a mut EncodingWriter<B>, H);
 
-        impl<W: io::Write, H> WithUnmappableHandlerWriter<'_, W, H>
+        impl<B: BufferedWrite, H> WithUnmappableHandlerWriter<'_, B, H>
         where
-            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<B>) -> io::Result<()>,
         {
             fn handle_deferred_unmappable_error(&mut self) -> io::Result<()> {
                 match self.0.deferred_error {
@@ -248,9 +261,9 @@ impl<W: io::Write> EncodingWriter<W> {
             }
         }
 
-        impl<W: io::Write, H> WriteFmtAdapter for WithUnmappableHandlerWriter<'_, W, H>
+        impl<B: BufferedWrite, H> WriteFmtAdapter for WithUnmappableHandlerWriter<'_, B, H>
         where
-            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<B>) -> io::Result<()>,
         {
             fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
                 self.handle_deferred_unmappable_error()?;
@@ -258,9 +271,9 @@ impl<W: io::Write> EncodingWriter<W> {
             }
         }
 
-        impl<W: io::Write, H> io::Write for WithUnmappableHandlerWriter<'_, W, H>
+        impl<B: BufferedWrite, H> io::Write for WithUnmappableHandlerWriter<'_, B, H>
         where
-            H: FnMut(UnmappableError, &mut PassthroughWriter<W>) -> io::Result<()>,
+            H: FnMut(UnmappableError, &mut PassthroughWriter<B>) -> io::Result<()>,
         {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 self.handle_deferred_unmappable_error()?;
@@ -284,7 +297,7 @@ impl<W: io::Write> EncodingWriter<W> {
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
-        debug_assert!(self.writer.unfilled().len() >= MIN_BUF_SIZE);
+        debug_assert!(self.buffer.unfilled().len() >= MIN_BUF_SIZE);
 
         // SAFETY: `mem::transmute` is generally okay because `&[T]` and `&[MaybeUninit<T>]` have
         // the same layout and `u8` is a trivial type. It is technically UB to create a mutable
@@ -293,10 +306,10 @@ impl<W: io::Write> EncodingWriter<W> {
         // implement the `encode_from_utf8_to_vec_*` methods.
         let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
             buf,
-            unsafe { mem::transmute(self.writer.unfilled()) },
+            unsafe { mem::transmute(self.buffer.unfilled()) },
             false,
         );
-        unsafe { self.writer.advance(written) };
+        unsafe { self.buffer.advance(written) };
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
 
@@ -334,20 +347,20 @@ impl<W: io::Write> EncodingWriter<W> {
     }
 }
 
-impl<W: io::Write> WriteFmtAdapter for EncodingWriter<W> {
+impl<B: BufferedWrite> WriteFmtAdapter for EncodingWriter<B> {
     fn write_str_io(&mut self, buf: &str) -> io::Result<usize> {
         self.write_str(buf)
     }
 }
 
-impl<W: io::Write> io::Write for EncodingWriter<W> {
+impl<B: BufferedWrite> io::Write for EncodingWriter<B> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // recover from IncompleteUtf8 later; otherwise, report any deferred error
         self.realize_deferred_error_except_incomplete_utf8()?;
         if buf.is_empty() {
             return Ok(0);
         }
-        self.writer.try_reserve(MIN_BUF_SIZE, None)?;
+        self.buffer.try_reserve(MIN_BUF_SIZE, None)?;
 
         Ok(match self.deferred_error.take() {
             None => match str_from_utf8_up_to_error(buf) {
@@ -401,7 +414,7 @@ impl<W: io::Write> io::Write for EncodingWriter<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.realize_any_deferred_error()?;
-        self.writer.flush()
+        self.buffer.flush()
     }
 
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
@@ -429,9 +442,9 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
 
 /// The writer type returned by [`EncodingWriter::passthrough`].
 #[derive(Debug)]
-pub struct PassthroughWriter<'a, W: io::Write>(&'a mut EncodingWriter<W>);
+pub struct PassthroughWriter<'a, B>(&'a mut EncodingWriter<B>);
 
-impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
+impl<B: BufferedWrite> io::Write for PassthroughWriter<'_, B> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             self.0.realize_deferred_error_except_incomplete_utf8()?;
@@ -439,7 +452,7 @@ impl<W: io::Write> io::Write for PassthroughWriter<'_, W> {
         } else {
             self.0.realize_any_deferred_error()?;
         }
-        self.0.writer.write(buf)
+        self.0.buffer.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -515,7 +528,7 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
 }
 
 /// A trait abstracting the buffered byte writer that exposes its unfilled capacity as a slice.
-trait BufferedWrite: io::Write {
+pub trait BufferedWrite: io::Write {
     /// Returns the unfilled buffer capacity as a slice.
     ///
     /// The caller must [`advance`](Self::advance) the cursor after writing initialized data into
@@ -547,7 +560,7 @@ trait BufferedWrite: io::Write {
 /// A [`BufWriter`](io::BufWriter)-like type that exposes its unfilled capacity as a slice through
 /// [`BufferedWrite`] trait.
 #[derive(Debug)]
-struct BufferedWriter<W: io::Write> {
+pub struct BufferedWriter<W: io::Write> {
     buffer: Vec<u8>,
     panicked: bool,
     inner: W,
@@ -562,7 +575,8 @@ impl<W: io::Write> BufferedWriter<W> {
         }
     }
 
-    fn get_ref(&self) -> &W {
+    /// Returns a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
         &self.inner
     }
 
