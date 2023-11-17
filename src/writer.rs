@@ -88,7 +88,7 @@ impl<W: io::Write> EncodingWriter<W> {
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
         Self {
-            writer: BufferedWriter::with_capacity(capacity, writer),
+            writer: BufferedWriter::with_capacity(capacity.max(MIN_BUF_SIZE), writer),
             encoder: encoder.into(),
             deferred_error: None,
         }
@@ -514,8 +514,8 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
     }
 }
 
-/// A trait abstracting the byte buffer that exposes its unfilled capacity as a slice.
-trait BufferCursor<Error> {
+/// A trait abstracting the buffered byte writer that exposes its unfilled capacity as a slice.
+trait BufferedWrite: io::Write {
     /// Returns the unfilled buffer capacity as a slice.
     ///
     /// The caller must [`advance`](Self::advance) the cursor after writing initialized data into
@@ -539,12 +539,13 @@ trait BufferCursor<Error> {
     /// reserve more space than `minimum` and is encouraged to reserve more than the `size_hint`
     /// provided by the caller, though it may end up reserving less space than `size_hint` (but not
     /// less than `minimum`). The implementation must return `Err` if it cannot reserve space of
-    /// `minimum` bytes and may also report `Err` if it encounters an error in reallocating memory,
-    /// flushing the existing content, or any other operations.
-    fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> Result<(), Error>;
+    /// `minimum` bytes and may also report `Err` if it encounters an error in flushing the
+    /// existing content or any other operations.
+    fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()>;
 }
 
-/// A `BufWriter`-like type that exposes its unfilled capacity as a slice.
+/// A [`BufWriter`](io::BufWriter)-like type that exposes its unfilled capacity as a slice through
+/// [`BufferedWrite`] trait.
 #[derive(Debug)]
 struct BufferedWriter<W: io::Write> {
     buffer: Vec<u8>,
@@ -555,7 +556,7 @@ struct BufferedWriter<W: io::Write> {
 impl<W: io::Write> BufferedWriter<W> {
     fn with_capacity(capacity: usize, inner: W) -> Self {
         Self {
-            buffer: Vec::with_capacity(capacity.max(MIN_BUF_SIZE)),
+            buffer: Vec::with_capacity(capacity),
             panicked: false,
             inner,
         }
@@ -630,7 +631,7 @@ impl<W: io::Write> Drop for BufferedWriter<W> {
 
 impl<W: io::Write> io::Write for BufferedWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.try_reserve(MIN_BUF_SIZE, Some(buf.len()))?;
+        self.try_reserve(1, Some(buf.len()))?;
         let capacity = self.unfilled().len();
         if buf.len() > capacity && self.buffer.is_empty() {
             // bypass the internal buffer if the input buffer is large
@@ -654,7 +655,7 @@ impl<W: io::Write> io::Write for BufferedWriter<W> {
     }
 }
 
-impl<W: io::Write> BufferCursor<io::Error> for BufferedWriter<W> {
+impl<W: io::Write> BufferedWrite for BufferedWriter<W> {
     fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
         self.buffer.spare_capacity_mut()
     }
@@ -669,15 +670,14 @@ impl<W: io::Write> BufferCursor<io::Error> for BufferedWriter<W> {
             < size_hint.map_or(minimum, |n| n.max(minimum))
         {
             self.flush_buffer()?;
+            if self.buffer.capacity() - self.buffer.len() < minimum {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "failed to reserve minimum buffer capacity",
+                ));
+            }
         }
-        if self.buffer.capacity() - self.buffer.len() >= minimum {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to reserve minimum buffer capacity",
-            ))
-        }
+        Ok(())
     }
 }
 
