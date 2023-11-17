@@ -1,8 +1,8 @@
-use std::{io, str};
+use std::{io, slice, str};
 
 use encoding_rs::Decoder;
 
-use super::MalformedError;
+use super::{util, MalformedError};
 
 /// A reader wrapper that decodes an input byte stream into UTF-8.
 ///
@@ -46,11 +46,11 @@ use super::MalformedError;
 /// ```
 #[derive(Debug)]
 pub struct DecodingReader<R> {
-    reader: super::util::BufReadWithFallbackBuffer<R>,
-    decoder: Option<super::util::DebuggableDecoder>,
+    reader: BufReadWithFallbackBuffer<R>,
+    decoder: Option<util::DebuggableDecoder>,
     /// A tiny backup buffer used when the buffer supplied by the caller is so small that the
     /// decoder might be unable to write a single UTF-8 character.
-    fallback_buf: super::util::MiniBuffer,
+    fallback_buf: util::MiniBuffer,
     /// Storage to carry an error from one read call to the next, used to tentatively return `Ok`
     /// (as per the contract) after writing some bytes up to an error and report the error at the
     /// beginning of the subsequent call.
@@ -364,6 +364,28 @@ impl<R: io::BufRead, const LOSSY: bool, const FUSED: bool> io::Read
     }
 }
 
+/// Executes the specified decoder method but uses the fallback buffer if the destination buffer
+/// may be too small to call the decoder method.
+///
+/// This function assumes that the fallback buffer is empty.
+fn decode_with_fallback_buf<T>(
+    dst_buf: &mut [u8],
+    fallback_buf: &mut util::MiniBuffer,
+    mut decode: impl FnMut(&mut [u8]) -> (T, usize, usize),
+) -> (T, usize, usize) {
+    debug_assert!(fallback_buf.is_empty());
+    if dst_buf.len() > fallback_buf.spare_capacity_len() {
+        decode(dst_buf)
+    } else {
+        let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
+        if written > 0 {
+            fallback_buf.add_len(written);
+            written = fallback_buf.read_buf(dst_buf);
+        }
+        (result, consumed, written)
+    }
+}
+
 trait ReadToStringAdapter: io::Read {
     /// Returns `true` if the bytes returned by this reader so far, as a whole, is a valid UTF-8
     /// sequence.
@@ -412,25 +434,62 @@ fn read_to_string_impl(
     }
 }
 
-/// Executes the specified decoder method but uses the fallback buffer if the destination buffer
-/// may be too small to call the decoder method.
+/// A `BufRead` wrapper to guarantee the minimum length of byte slice that `fill_buf` returns when
+/// EOF is not reached.
 ///
-/// This function assumes that the fallback buffer is empty.
-fn decode_with_fallback_buf<T>(
-    dst_buf: &mut [u8],
-    fallback_buf: &mut super::util::MiniBuffer,
-    mut decode: impl FnMut(&mut [u8]) -> (T, usize, usize),
-) -> (T, usize, usize) {
-    debug_assert!(fallback_buf.is_empty());
-    if dst_buf.len() > fallback_buf.spare_capacity_len() {
-        decode(dst_buf)
-    } else {
-        let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
-        if written > 0 {
-            fallback_buf.add_len(written);
-            written = fallback_buf.read_buf(dst_buf);
+/// This wrapper is necessary because `BufRead::fill_buf` might return a very small byte slice,
+/// while `encoding_rs::Decoder` might write zero bytes to the output buffer with such a small
+/// input byte slice.
+#[derive(Debug, Default)]
+pub struct BufReadWithFallbackBuffer<R> {
+    inner: R,
+    fallback_buf: util::MiniBuffer,
+}
+
+impl<R: io::BufRead> From<R> for BufReadWithFallbackBuffer<R> {
+    fn from(value: R) -> Self {
+        Self {
+            inner: value,
+            fallback_buf: Default::default(),
         }
-        (result, consumed, written)
+    }
+}
+
+impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
+    pub fn as_inner(&self) -> &R {
+        &self.inner
+    }
+
+    pub fn into_parts(self) -> (R, util::MiniBuffer) {
+        (self.inner, self.fallback_buf)
+    }
+
+    pub fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if !self.fallback_buf.is_empty() {
+            self.fallback_buf.fill_from_reader(&mut self.inner)?;
+            return Ok(self.fallback_buf.as_ref());
+        }
+
+        {
+            let buf = self.inner.fill_buf()?;
+            if buf.is_empty() || buf.len() > self.fallback_buf.spare_capacity_len() {
+                // Intends to `return Ok(buf);` but hacks the borrow checker to work around the
+                // "conditional returns" limitation: https://github.com/rust-lang/rust/issues/51545
+                return Ok(unsafe { slice::from_raw_parts(buf.as_ptr(), buf.len()) });
+            }
+            // make sure to release mutable reference here
+        }
+
+        self.fallback_buf.fill_from_reader(&mut self.inner)?;
+        Ok(self.fallback_buf.as_ref())
+    }
+
+    pub fn consume(&mut self, amt: usize) {
+        let amt_fallback = amt.min(self.fallback_buf.len());
+        if amt_fallback > 0 {
+            self.fallback_buf.remove_front(amt_fallback);
+        }
+        self.inner.consume(amt - amt_fallback);
     }
 }
 

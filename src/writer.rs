@@ -2,7 +2,7 @@ use std::{fmt, io, mem, ptr, str};
 
 use encoding_rs::Encoder;
 
-use super::{MalformedError, UnmappableError};
+use super::{util, MalformedError, UnmappableError};
 
 const MIN_BUF_SIZE: usize = 32;
 
@@ -66,7 +66,7 @@ const MIN_BUF_SIZE: usize = 32;
 #[derive(Debug)]
 pub struct EncodingWriter<B> {
     buffer: B,
-    encoder: super::util::DebuggableEncoder,
+    encoder: util::DebuggableEncoder,
     /// Storage to carry an error from one write call to the next, used to tentatively return `Ok`
     /// (as per the contract) after consuming erroneous input and report the error at the beginning
     /// of the subsequent call.
@@ -378,7 +378,7 @@ impl<B: BufferedWrite> io::Write for EncodingWriter<B> {
                 }
                 // consume and save incomplete character fragment, waiting for the following bytes
                 Err(None) => {
-                    let mut bs = super::util::MiniBuffer::default();
+                    let mut bs = util::MiniBuffer::default();
                     let len = bs.fill_from_slice(buf);
                     debug_assert!(len == bs.len());
                     assert!(len < 4 && len == buf.len());
@@ -427,17 +427,7 @@ impl<B: BufferedWrite> io::Write for EncodingWriter<B> {
 enum DefErr {
     Unmappable(UnmappableError),
     MalformedUtf8(MalformedError),
-    IncompleteUtf8(super::util::MiniBuffer),
-}
-
-fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
-    match str::from_utf8(v) {
-        Ok(s) => Ok(s),
-        Err(e) if e.valid_up_to() > 0 => {
-            Ok(unsafe { str::from_utf8_unchecked(&v[..e.valid_up_to()]) })
-        }
-        Err(e) => Err(e.error_len()),
-    }
+    IncompleteUtf8(util::MiniBuffer),
 }
 
 /// The writer type returned by [`EncodingWriter::passthrough`].
@@ -457,6 +447,16 @@ impl<B: BufferedWrite> io::Write for PassthroughWriter<'_, B> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
+    }
+}
+
+fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
+    match str::from_utf8(v) {
+        Ok(s) => Ok(s),
+        Err(e) if e.valid_up_to() > 0 => {
+            Ok(unsafe { str::from_utf8_unchecked(&v[..e.valid_up_to()]) })
+        }
+        Err(e) => Err(e.error_len()),
     }
 }
 
