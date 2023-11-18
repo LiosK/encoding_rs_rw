@@ -95,6 +95,45 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     pub fn writer_ref(&self) -> &W {
         self.buffer.get_ref()
     }
+
+    /// Finishes the encoding writer and takes the underlying writer out of the structure.
+    ///
+    /// When this method encounters an error while [`finish`](Self::finish)ing this encoding writer
+    /// and destructing [`DefaultBuffer`], it returns an iterator that produces, in order of
+    /// occurrence, the unwritten bytes salvaged and the errors reported during operation, in
+    /// addition to returning the underlying writer. Since the error iterator is hard to handle, it
+    /// is recommended to [`flush`](io::Write::flush) first, which minimizes the chance of error.
+    pub fn unwrap_writer(
+        self,
+    ) -> Result<W, (W, impl Iterator<Item = io::Result<Vec<u8>>> + fmt::Debug)> {
+        let (mut buffer, iter) = match self.finish() {
+            Ok(buffer) => (buffer, None),
+            Err((buffer, iter)) => (buffer, Some(iter)),
+        };
+
+        let mut seq = Vec::new();
+
+        if let Err(e) = buffer.flush_buffer() {
+            seq.push(Err(e));
+        }
+
+        let (writer, unwritten) = buffer.into_parts();
+        match unwritten {
+            Ok(v) if v.is_empty() => {}
+            Ok(v) => seq.push(Ok(v)),
+            Err(e) => seq.push(Err(io::Error::new(io::ErrorKind::Other, e))),
+        }
+
+        if let Some(e) = iter {
+            seq.extend(e);
+        }
+
+        if seq.is_empty() {
+            Ok(writer)
+        } else {
+            Err((writer, seq.into_iter()))
+        }
+    }
 }
 
 impl<B: BufferedWrite> EncodingWriter<B> {
@@ -120,9 +159,9 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     /// Notifies the underlying encoder of the end of input stream, dropping it and returning the
     /// underlying buffer.
     ///
-    /// When this method detects an error finishing the encoder, it returns an iterator that
-    /// produces, in order of occurrence, the errors reported and the leftover bytes extracted from
-    /// the encoder structure, in addition to returning the underlying buffer.
+    /// When this method detects an error finishing the underlying encoder, it returns an iterator
+    /// that produces, in order of occurrence, the remaining bytes extracted from the encoder and
+    /// the errors reported during operation, in addition to returning the underlying buffer.
     pub fn finish(
         mut self,
     ) -> Result<B, (B, impl Iterator<Item = io::Result<Vec<u8>>> + fmt::Debug)> {

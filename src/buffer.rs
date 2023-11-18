@@ -56,7 +56,7 @@ impl<W: io::Write> DefaultBuffer<W> {
     }
 
     /// Writes the buffered data into the underlying writer.
-    fn flush_buffer(&mut self) -> io::Result<()> {
+    pub(crate) fn flush_buffer(&mut self) -> io::Result<()> {
         // A guard struct to make sure to remove consumed bytes from the buffer when dropped.
         struct PanicGuard<'a> {
             consumed: usize,
