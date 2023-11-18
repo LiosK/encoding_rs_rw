@@ -50,6 +50,30 @@ pub mod misc {
     pub use super::writer::{BufferedWrite, PassthroughWriter};
 }
 
+/// Implements `BufferedWrite` for `Vec<u8>`.
+mod vec_integration {
+    use std::{io, mem};
+
+    impl super::writer::BufferedWrite for Vec<u8> {
+        fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
+            self.spare_capacity_mut()
+        }
+
+        unsafe fn advance(&mut self, n: usize) {
+            self.set_len(self.len() + n);
+        }
+
+        fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
+            let size_hint = size_hint.unwrap_or(minimum);
+            if size_hint > minimum && self.try_reserve(size_hint).is_ok() {
+                return Ok(());
+            }
+            self.try_reserve(minimum)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     mod ja;
