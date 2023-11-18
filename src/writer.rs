@@ -8,8 +8,10 @@ const MIN_BUF_SIZE: usize = 32;
 
 /// A writer wrapper that encodes an input byte stream into the specified encoding.
 ///
-/// This wrapper accepts bytes through [`std::io::Write`] methods, encodes them using the specified
-/// encoder, and writes the encoded bytes into the underlying writer. Like [`BufWriter`], this type
+/// This encoding writer accepts bytes through [`std::io::Write`] methods, encodes them using the
+/// specified encoder, and writes the encoded bytes into the underlying buffer that implements
+/// [`BufferedWrite`]. This wrapper also supports writing into `std::io::Write` writers by fully
+/// integrating the [`BufWriter`]-like [`DefaultBuffer`] type. Like `BufWriter`, `DefaultBuffer`
 /// stores the encoded bytes in its internal buffer and writes them into the underlying writer when
 /// dropped or when the buffer becomes full.
 ///
@@ -214,7 +216,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     /// This is an equivalent of [`write`](std::io::Write::write) but takes a string slice as the
     /// argument instead of a byte slice, eliminating the UTF-8 validation of the input.
     ///
-    /// See the type-level documentation for the error semantics.
+    /// See [the type-level documentation](Self) for the error semantics.
     ///
     /// This method is a low-level call primarily meant for a loop handling [`UnmappableError`] in
     /// a desired manner. See the `UnmappableError` documentation for usage examples. Where
@@ -243,8 +245,8 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     /// The caller must ensure that the bytes written are a valid byte sequence in the destination
     /// encoding, as this writer does not validate or transform the input byte sequence.
     ///
-    /// See the type-level documentation for the error semantics of the writer methods provided by
-    /// the returned writer.
+    /// See [the type-level documentation](Self) for the error semantics of the writer methods
+    /// provided by the returned writer.
     ///
     /// # Examples
     ///
@@ -492,6 +494,13 @@ enum DefErr {
 /// The writer type returned by [`EncodingWriter::passthrough`].
 #[derive(Debug)]
 pub struct PassthroughWriter<'a, B>(&'a mut EncodingWriter<B>);
+
+impl<B> PassthroughWriter<'_, B> {
+    /// Returns a reference to the underlying encoding writer.
+    pub fn encoding_writer_ref(&self) -> &EncodingWriter<B> {
+        self.0
+    }
+}
 
 impl<B: BufferedWrite> io::Write for PassthroughWriter<'_, B> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

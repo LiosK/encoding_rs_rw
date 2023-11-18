@@ -70,7 +70,7 @@ impl<R: io::BufRead> DecodingReader<R> {
 
     /// Returns a reference to the underlying reader.
     pub fn reader_ref(&self) -> &R {
-        self.reader.as_inner()
+        self.reader.get_ref()
     }
 
     /// Returns a reference to the underlying decoder if it is still active or `None` otherwise.
@@ -456,7 +456,7 @@ impl<R: io::BufRead> From<R> for BufReadWithFallbackBuffer<R> {
 }
 
 impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
-    fn as_inner(&self) -> &R {
+    fn get_ref(&self) -> &R {
         &self.inner
     }
 
