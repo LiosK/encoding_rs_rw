@@ -1,4 +1,4 @@
-use std::{io, mem, ptr};
+use std::{error, fmt, io, mem, ptr};
 
 use super::writer::BufferedWrite;
 
@@ -30,12 +30,25 @@ impl<W: io::Write> BufferedWriter<W> {
         &self.inner
     }
 
-    fn _into_parts(self) -> (W, Vec<u8>) {
-        // destruct `self`, moving out some fields and dropping the rest
-        unsafe {
-            let mut m = mem::ManuallyDrop::new(self);
-            ptr::drop_in_place(&mut m.panicked);
-            (ptr::read(&m.inner), ptr::read(&m.buffer))
+    /// Returns the underlying writer.
+    ///
+    /// This method consumes `self` and returns an error wrapping `self` when the attempt to flush
+    /// the internal buffer fails.
+    pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
+        match self.flush_buffer() {
+            // SAFETY: ok because all the fields are manually dropped or taken out of the scope
+            // while `ManuallyDrop` guarantees that they are not double-dropped
+            Ok(_) => unsafe {
+                debug_assert!(self.buffer.is_empty());
+                let mut m = mem::ManuallyDrop::new(self);
+                ptr::drop_in_place(&mut m.buffer);
+                ptr::drop_in_place(&mut m.panicked);
+                Ok(ptr::read(&m.inner))
+            },
+            Err(error) => Err(IntoInnerError {
+                error,
+                buffered_writer: self,
+            }),
         }
     }
 
@@ -142,5 +155,39 @@ impl<W: io::Write> BufferedWrite for BufferedWriter<W> {
             }
         }
         Ok(())
+    }
+}
+
+/// The error returned by [`BufferedWriter::into_inner`] when the attempt to flush the internal
+/// buffer fails.
+#[derive(Debug)]
+pub struct IntoInnerError<B> {
+    error: io::Error,
+    buffered_writer: B,
+}
+
+impl<B> IntoInnerError<B> {
+    /// Disassembles the structure and returns the error that caused [`BufferedWriter::into_inner`]
+    /// to fail and the original buffered writer.
+    pub fn into_parts(self) -> (io::Error, B) {
+        (self.error, self.buffered_writer)
+    }
+}
+
+impl<B> fmt::Display for IntoInnerError<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, f)
+    }
+}
+
+impl<B: fmt::Debug> error::Error for IntoInnerError<B> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl<B> From<IntoInnerError<B>> for io::Error {
+    fn from(value: IntoInnerError<B>) -> Self {
+        value.error
     }
 }
