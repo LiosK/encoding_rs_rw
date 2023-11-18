@@ -11,10 +11,7 @@ fn reader_high_level_api() {
         for c in cs {
             let mut reader =
                 DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            let mut dst = String::new();
-            reader.read_to_string(&mut dst).unwrap();
-            assert_eq!(dst, c.decoded());
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+            reader_high_level_api_impl(c, &mut reader);
         }
     });
 }
@@ -26,15 +23,44 @@ fn lossy_reader_high_level_api() {
         for c in cs {
             let mut reader =
                 DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            {
-                let mut reader = reader.lossy();
-                let mut dst = String::new();
-                reader.read_to_string(&mut dst).unwrap();
-                assert_eq!(dst, c.decoded());
-            }
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+            reader_high_level_api_impl(c, &mut reader.lossy());
         }
     });
+}
+
+/// Tests the unfused reader's high level API usage.
+#[test]
+fn unfused_reader_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader =
+                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+            reader_high_level_api_impl(c, &mut reader.unfused());
+        }
+    });
+}
+
+/// Tests the lossy unfused reader's high level API usage.
+#[test]
+fn lossy_unfused_reader_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader =
+                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+            reader_high_level_api_impl(c, &mut reader.lossy_unfused());
+        }
+    });
+}
+
+fn reader_high_level_api_impl<D, E, R>(c: &TestCase<D, E>, reader: &mut R)
+where
+    D: AsRef<str>,
+    E: AsRef<[u8]>,
+    R: io::Read,
+{
+    let mut dst = String::new();
+    reader.read_to_string(&mut dst).unwrap();
+    assert_eq!(dst, c.decoded());
 }
 
 /// Tests the writer's high level API usage.
@@ -46,7 +72,21 @@ fn writer_high_level_api() {
             write!(writer, "{}", c.decoded()).unwrap();
             writer.flush().unwrap();
             assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(matches!(writer.finish(), (_, v, Ok(())) if v.is_empty()));
+            assert!(writer.finish().is_ok());
+        }
+    });
+}
+
+/// Tests the writer's high level API usage without buffering.
+#[test]
+fn unbuffered_writer_high_level_api() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+            write!(writer, "{}", c.decoded()).unwrap();
+            writer.flush().unwrap();
+            assert_eq!(writer.buffer_ref(), c.encoded());
+            assert!(writer.finish().is_ok());
         }
     });
 }
@@ -60,17 +100,7 @@ fn reader_byte_by_byte() {
                 io::BufReader::with_capacity(1, c.encoded()),
                 c.encoding.new_decoder(),
             );
-            let mut dst = Vec::with_capacity(c.decoded().len());
-            let mut buf = [0u8; 1];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => dst.extend(&buf[..n]),
-                    ret => panic!("assertion failed: {:?}", ret),
-                }
-            }
-            assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+            reader_byte_by_byte_impl(c, &mut reader);
         }
     });
 }
@@ -84,22 +114,55 @@ fn lossy_reader_byte_by_byte() {
                 io::BufReader::with_capacity(1, c.encoded()),
                 c.encoding.new_decoder(),
             );
-            {
-                let mut reader = reader.lossy();
-                let mut dst = Vec::with_capacity(c.decoded().len());
-                let mut buf = [0u8; 1];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => dst.extend(&buf[..n]),
-                        ret => panic!("assertion failed: {:?}", ret),
-                    }
-                }
-                assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
-            }
-            assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
+            reader_byte_by_byte_impl(c, &mut reader.lossy());
         }
     });
+}
+
+/// Tests the unfused reader for byte-by-byte streaming.
+#[test]
+fn unfused_reader_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader = DecodingReader::new(
+                io::BufReader::with_capacity(1, c.encoded()),
+                c.encoding.new_decoder(),
+            );
+            reader_byte_by_byte_impl(c, &mut reader.unfused());
+        }
+    });
+}
+
+/// Tests the lossy unfused reader for byte-by-byte streaming.
+#[test]
+fn lossy_unfused_reader_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut reader = DecodingReader::new(
+                io::BufReader::with_capacity(1, c.encoded()),
+                c.encoding.new_decoder(),
+            );
+            reader_byte_by_byte_impl(c, &mut reader.lossy_unfused());
+        }
+    });
+}
+
+fn reader_byte_by_byte_impl<D, E, R>(c: &TestCase<D, E>, reader: &mut R)
+where
+    D: AsRef<str>,
+    E: AsRef<[u8]>,
+    R: io::Read,
+{
+    let mut dst = Vec::with_capacity(c.decoded().len());
+    let mut buf = [0u8; 1];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(1) => dst.extend(&buf[..1]),
+            ret => panic!("assertion failed: {:?}", ret),
+        }
+    }
+    assert_eq!(String::from_utf8(dst).unwrap(), c.decoded());
 }
 
 /// Tests the writer for byte-by-byte streaming.
@@ -117,7 +180,27 @@ fn writer_byte_by_byte() {
             }
             writer.flush().unwrap();
             assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(matches!(writer.finish(), (_, v, Ok(())) if v.is_empty()));
+            assert!(writer.finish().is_ok());
+        }
+    });
+}
+
+/// Tests the writer for byte-by-byte streaming without buffering.
+#[test]
+fn unbuffered_writer_byte_by_byte() {
+    TEST_CASES.with(|cs| {
+        for c in cs {
+            let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+            let mut src = c.decoded().as_bytes();
+            while !src.is_empty() {
+                match writer.write(&src[..1]) {
+                    Ok(1) => src = &src[1..],
+                    ret => panic!("assertion failed: {:?}", ret),
+                }
+            }
+            writer.flush().unwrap();
+            assert_eq!(writer.buffer_ref(), c.encoded());
+            assert!(writer.finish().is_ok());
         }
     });
 }
@@ -154,7 +237,6 @@ fn reader_malformed_bytes() {
                             }
                         }
                         assert!(matches!(reader.read(&mut [0; 64]), Ok(0)));
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         dst
                     };
                     assert_eq!(actual, expected);
@@ -169,14 +251,13 @@ fn reader_malformed_bytes() {
                         loop {
                             match reader.read(&mut buf) {
                                 Ok(0) => break,
-                                Ok(n) => dst.extend(&buf[..n]),
+                                Ok(1) => dst.extend(&buf[..1]),
                                 Err(e) if MalformedError::wrapped_in(&e).is_some() => {
                                     dst.extend("�".as_bytes())
                                 }
                                 ret => panic!("assertion failed: {:?}", ret),
                             }
                         }
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         String::from_utf8(dst).unwrap()
                     };
                     assert_eq!(actual_byte_by_byte, expected);
@@ -186,7 +267,6 @@ fn reader_malformed_bytes() {
                         let mut dst = String::new();
                         reader.lossy().read_to_string(&mut dst).unwrap();
                         assert!(matches!(reader.lossy().read(&mut [0; 64]), Ok(0)));
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         dst
                     };
                     assert_eq!(actual_lossy, expected);
@@ -201,14 +281,96 @@ fn reader_malformed_bytes() {
                         loop {
                             match reader.lossy().read(&mut buf) {
                                 Ok(0) => break,
-                                Ok(n) => dst.extend(&buf[..n]),
+                                Ok(1) => dst.extend(&buf[..1]),
                                 ret => panic!("assertion failed: {:?}", ret),
                             }
                         }
-                        assert!(matches!(reader.finish(), (_, v, Ok(())) if v.is_empty()));
                         String::from_utf8(dst).unwrap()
                     };
                     assert_eq!(actual_lossy_byte_by_byte, expected);
+
+                    let actual_unfused = {
+                        let mut reader = DecodingReader::new(b.encoded(), a.encoding.new_decoder());
+                        let mut dst = String::new();
+                        while let Err(io_error) = reader.unfused().read_to_string(&mut dst) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.push('�');
+                            } else {
+                                unreachable!();
+                            }
+                        }
+                        assert!(matches!(reader.unfused().read(&mut [0; 64]), Ok(0)));
+                        if let Err(io_error) = reader.read(&mut [0; 64]) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.push('�');
+                            }
+                        }
+                        dst
+                    };
+                    assert_eq!(actual_unfused, expected);
+
+                    let actual_unfused_byte_by_byte = {
+                        let mut reader = DecodingReader::new(
+                            io::BufReader::with_capacity(1, b.encoded()),
+                            a.encoding.new_decoder(),
+                        );
+                        let mut dst = Vec::new();
+                        let mut buf = [0u8; 1];
+                        loop {
+                            match reader.unfused().read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(1) => dst.extend(&buf[..1]),
+                                Err(e) if MalformedError::wrapped_in(&e).is_some() => {
+                                    dst.extend("�".as_bytes())
+                                }
+                                ret => panic!("assertion failed: {:?}", ret),
+                            }
+                        }
+                        if let Err(io_error) = reader.read(&mut [0; 64]) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.extend("�".as_bytes());
+                            }
+                        }
+                        String::from_utf8(dst).unwrap()
+                    };
+                    assert_eq!(actual_unfused_byte_by_byte, expected);
+
+                    let actual_lossy_unfused = {
+                        let mut reader = DecodingReader::new(b.encoded(), a.encoding.new_decoder());
+                        let mut dst = String::new();
+                        reader.lossy_unfused().read_to_string(&mut dst).unwrap();
+                        assert!(matches!(reader.lossy().read(&mut [0; 64]), Ok(0)));
+                        if let Err(io_error) = reader.read(&mut [0; 64]) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.push('�');
+                            }
+                        }
+                        dst
+                    };
+                    assert_eq!(actual_lossy_unfused, expected);
+
+                    let actual_lossy_unfused_byte_by_byte = {
+                        let mut reader = DecodingReader::new(
+                            io::BufReader::with_capacity(1, b.encoded()),
+                            a.encoding.new_decoder(),
+                        );
+                        let mut dst = Vec::new();
+                        let mut buf = [0u8; 1];
+                        loop {
+                            match reader.lossy_unfused().read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(1) => dst.extend(&buf[..1]),
+                                ret => panic!("assertion failed: {:?}", ret),
+                            }
+                        }
+                        if let Err(io_error) = reader.read(&mut [0; 64]) {
+                            if MalformedError::wrapped_in(&io_error).is_some() {
+                                dst.extend("�".as_bytes());
+                            }
+                        }
+                        String::from_utf8(dst).unwrap()
+                    };
+                    assert_eq!(actual_lossy_unfused_byte_by_byte, expected);
                 }
             }
         }
@@ -238,8 +400,7 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.unwrap_writer().unwrap()
             };
             assert_eq!(actual, c.encoded());
 
@@ -261,15 +422,14 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.unwrap_writer().unwrap()
             };
             assert_eq!(actual_byte_by_byte, c.encoded());
         }
     });
 }
+
 /// Emulates the replacement behavior of `encoding_rs::Encoder`.
-#[cfg(feature = "unstable-handler")]
 #[test]
 fn writer_unmappable_char_with_handler() {
     TEST_CASES_UNMAPPABLE.with(|cs| {
@@ -283,8 +443,7 @@ fn writer_unmappable_char_with_handler() {
                     write!(writer, "{}", src).unwrap();
                     writer.flush().unwrap();
                 }
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.unwrap_writer().unwrap()
             };
             assert_eq!(actual_handler, c.encoded());
 
@@ -302,8 +461,98 @@ fn writer_unmappable_char_with_handler() {
                     }
                     writer.flush().unwrap();
                 }
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.unwrap_writer().unwrap()
+            };
+            assert_eq!(actual_handler_byte_by_byte, c.encoded());
+        }
+    });
+}
+
+/// Emulates the replacement behavior of `encoding_rs::Encoder`.
+#[test]
+fn unbuffered_writer_unmappable_char() {
+    TEST_CASES_UNMAPPABLE.with(|cs| {
+        for c in cs {
+            let actual = {
+                let mut src = c.decoded();
+                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                while !src.is_empty() {
+                    match writer.write_str(src) {
+                        Ok(0) => unreachable!(),
+                        Ok(consumed) => src = &src[consumed..],
+                        Err(io_error) => {
+                            if let Some(e) = UnmappableError::wrapped_in(&io_error) {
+                                write!(writer.passthrough(), "&#{};", u32::from(e.value()))
+                                    .unwrap();
+                            } else {
+                                unreachable!();
+                            }
+                        }
+                    }
+                }
+                writer.flush().unwrap();
+                writer.finish().unwrap()
+            };
+            assert_eq!(actual, c.encoded());
+
+            let actual_byte_by_byte = {
+                let mut src = c.decoded().as_bytes();
+                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                while !src.is_empty() {
+                    match writer.write(&src[..1]) {
+                        Ok(1) => src = &src[1..],
+                        Ok(_) => unreachable!(),
+                        Err(io_error) => {
+                            if let Some(e) = UnmappableError::wrapped_in(&io_error) {
+                                write!(writer.passthrough(), "&#{};", u32::from(e.value()))
+                                    .unwrap();
+                            } else {
+                                unreachable!();
+                            }
+                        }
+                    }
+                }
+                writer.flush().unwrap();
+                writer.finish().unwrap()
+            };
+            assert_eq!(actual_byte_by_byte, c.encoded());
+        }
+    });
+}
+
+/// Emulates the replacement behavior of `encoding_rs::Encoder`.
+#[test]
+fn unbuffered_writer_unmappable_char_with_handler() {
+    TEST_CASES_UNMAPPABLE.with(|cs| {
+        for c in cs {
+            let actual_handler = {
+                let src = c.decoded();
+                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                {
+                    let mut writer = writer
+                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+                    write!(writer, "{}", src).unwrap();
+                    writer.flush().unwrap();
+                }
+                writer.finish().unwrap()
+            };
+            assert_eq!(actual_handler, c.encoded());
+
+            let actual_handler_byte_by_byte = {
+                let mut src = c.decoded().as_bytes();
+                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                {
+                    let mut writer = writer
+                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+                    while !src.is_empty() {
+                        match writer.write(&src[..1]) {
+                            Ok(1) => src = &src[1..],
+                            _ => unreachable!(),
+                        }
+                    }
+                    writer.flush().unwrap();
+                }
+                writer.finish().unwrap()
             };
             assert_eq!(actual_handler_byte_by_byte, c.encoded());
         }

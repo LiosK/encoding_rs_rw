@@ -9,7 +9,7 @@ use std::{error, fmt, io};
 /// The [`Read`] and [`Write`] implementations of `DecodingReader` and `EncodingWriter`,
 /// respectively, report this error in the form of [`std::io::Error`] wrapping an instance of this
 /// type. Callers need to unwrap and downcast the inner error of a reported error, which can be
-/// shortcut by [`MalformedError::wrapped_in`].
+/// shortcut by [`wrapped_in`](Self::wrapped_in).
 ///
 /// [`DecodingReader`]: crate::DecodingReader
 /// [`EncodingWriter`]: crate::EncodingWriter
@@ -75,7 +75,7 @@ impl MalformedError {
 ///
 /// The [`Write`] implementation of `EncodingWriter` reports this error in the form of
 /// [`std::io::Error`] wrapping an instance of this type. Callers need to unwrap and downcast the
-/// inner error of a reported error, which can be shortcut by [`UnmappableError::wrapped_in`].
+/// inner error of a reported error, which can be shortcut by [`wrapped_in`](Self::wrapped_in).
 ///
 /// [`EncodingWriter`]: crate::EncodingWriter
 /// [`Write`]: std::io::Write

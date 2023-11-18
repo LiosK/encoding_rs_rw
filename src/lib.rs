@@ -30,13 +30,6 @@
 //! and more flexible error semantics.
 //!
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
-//!
-//! # Crate features
-//!
-//! `unstable-handler` enables [`EncodingWriter::with_unmappable_handler`] that
-//! provides an encoding writer processing unmappable characters with a specified
-//! handler. This feature does not require a nightly build, but the API is
-//! experimental and yet to be finalized.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -44,15 +37,42 @@ mod error;
 mod reader;
 mod writer;
 
+mod buffer;
 mod util;
 
 pub use error::{MalformedError, UnmappableError};
 pub use reader::DecodingReader;
 pub use writer::EncodingWriter;
 
-#[cfg(feature = "unstable-handler")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable-handler")))]
-pub use writer::PassthroughWriter;
+/// Miscellaneous types not intended for direct access by name.
+pub mod misc {
+    pub use super::buffer::{DefaultBuffer, WriterPanicked};
+    pub use super::writer::{BufferedWrite, PassthroughWriter};
+}
+
+/// Implements `BufferedWrite` for `Vec<u8>`.
+mod vec_integration {
+    use std::{io, mem};
+
+    impl super::writer::BufferedWrite for Vec<u8> {
+        fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
+            self.spare_capacity_mut()
+        }
+
+        unsafe fn advance(&mut self, n: usize) {
+            self.set_len(self.len() + n);
+        }
+
+        fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
+            let size_hint = size_hint.unwrap_or(minimum);
+            if size_hint > minimum && self.try_reserve(size_hint).is_ok() {
+                return Ok(());
+            }
+            self.try_reserve(minimum)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
