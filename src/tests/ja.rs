@@ -72,7 +72,7 @@ fn writer_high_level_api() {
             write!(writer, "{}", c.decoded()).unwrap();
             writer.flush().unwrap();
             assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(matches!(writer.finish(), (_, v, Ok(())) if v.is_empty()));
+            assert!(writer.finish().is_ok());
         }
     });
 }
@@ -166,7 +166,7 @@ fn writer_byte_by_byte() {
             }
             writer.flush().unwrap();
             assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(matches!(writer.finish(), (_, v, Ok(())) if v.is_empty()));
+            assert!(writer.finish().is_ok());
         }
     });
 }
@@ -366,10 +366,9 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.finish().unwrap()
             };
-            assert_eq!(actual, c.encoded());
+            assert_eq!(actual.get_ref(), c.encoded());
 
             let actual_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
@@ -389,10 +388,9 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.finish().unwrap()
             };
-            assert_eq!(actual_byte_by_byte, c.encoded());
+            assert_eq!(actual_byte_by_byte.get_ref(), c.encoded());
         }
     });
 }
@@ -410,10 +408,9 @@ fn writer_unmappable_char_with_handler() {
                     write!(writer, "{}", src).unwrap();
                     writer.flush().unwrap();
                 }
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.finish().unwrap()
             };
-            assert_eq!(actual_handler, c.encoded());
+            assert_eq!(actual_handler.get_ref(), c.encoded());
 
             let actual_handler_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
@@ -429,10 +426,9 @@ fn writer_unmappable_char_with_handler() {
                     }
                     writer.flush().unwrap();
                 }
-                let (dst, _, _) = writer.finish();
-                dst
+                writer.finish().unwrap()
             };
-            assert_eq!(actual_handler_byte_by_byte, c.encoded());
+            assert_eq!(actual_handler_byte_by_byte.get_ref(), c.encoded());
         }
     });
 }

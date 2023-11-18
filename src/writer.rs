@@ -95,39 +95,6 @@ impl<W: io::Write> EncodingWriter<BufferedWriter<W>> {
     pub fn writer_ref(&self) -> &W {
         self.buffer.get_ref()
     }
-
-    /// Notifies the underlying encoder of the end of input stream, dropping it and returning the
-    /// underlying writer, the internal buffer content not yet written to the underlying writer,
-    /// and any error reported at the end of input byte sequence.
-    ///
-    /// It is recommended to call `flush` first because this method does not flush the internal
-    /// buffer.
-    pub fn finish(mut self) -> (W, Vec<u8>, io::Result<()>) {
-        let mut temp_buf = Vec::with_capacity(
-            self.encoder
-                .max_buffer_length_from_utf8_without_replacement(0)
-                .unwrap(),
-        );
-        let (result, _) =
-            self.encoder
-                .encode_from_utf8_to_vec_without_replacement("", &mut temp_buf, true);
-
-        let deferred_error = match result {
-            encoding_rs::EncoderResult::InputEmpty => self.realize_any_deferred_error(),
-            _ => {
-                debug_assert!(false, "unreachable");
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "failed to finish encoder unexpectedly",
-                ))
-            }
-        };
-
-        let (writer, mut buffer) = self.buffer.into_parts();
-        buffer.extend(temp_buf);
-
-        (writer, buffer, deferred_error)
-    }
 }
 
 impl<B: BufferedWrite> EncodingWriter<B> {
@@ -148,6 +115,59 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     /// Returns a reference to the underlying encoder.
     pub fn encoder_ref(&self) -> &Encoder {
         &self.encoder
+    }
+
+    /// Notifies the underlying encoder of the end of input stream, dropping it and returning the
+    /// underlying buffer.
+    ///
+    /// When this method detects an error finishing the encoder, it returns an iterator that
+    /// produces, in order of occurrence, the errors reported and the leftover bytes extracted from
+    /// the encoder structure, in addition to returning the underlying buffer.
+    pub fn finish(
+        mut self,
+    ) -> Result<B, (B, impl Iterator<Item = io::Result<Vec<u8>>> + fmt::Debug)> {
+        let mut seq = Vec::new();
+
+        let max_remainder_len = self
+            .encoder
+            .max_buffer_length_from_utf8_without_replacement(0)
+            .unwrap();
+        if let Err(e) = self.realize_any_deferred_error() {
+            seq.push(Err(e));
+        } else if let Err(e) = self.buffer.try_reserve(max_remainder_len, None) {
+            seq.push(Err(e));
+        }
+
+        let result = if seq.is_empty() {
+            // SAFETY: should be okay but technically UB (see notes in `write_str_inner`)
+            let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
+            let (result, _consumed, written) = self
+                .encoder
+                .encode_from_utf8_without_replacement("", dst, true);
+            unsafe { self.buffer.advance(written) };
+            result
+        } else {
+            let mut dst = Vec::with_capacity(max_remainder_len);
+            let (result, _consumed) = self
+                .encoder
+                .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
+            if !dst.is_empty() {
+                seq.push(Ok(dst));
+            }
+            result
+        };
+
+        if let encoding_rs::EncoderResult::Unmappable(c) = result {
+            seq.push(Err(UnmappableError::new(c).wrap()));
+        } else {
+            debug_assert!(matches!(result, encoding_rs::EncoderResult::InputEmpty));
+        }
+
+        if seq.is_empty() {
+            Ok(self.buffer)
+        } else {
+            Err((self.buffer, seq.into_iter()))
+        }
     }
 
     /// Writes a string slice into this writer, returning how many input bytes were consumed.
@@ -172,6 +192,8 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             // writing another valid `&str`
             self.realize_any_deferred_error()?;
         }
+        // pass `None` as the size hint instead of `Some(buf.len())` to rely on Rust's standard
+        // adaptive reallocation strategy
         self.buffer.try_reserve(MIN_BUF_SIZE, None)?;
         Ok(self.write_str_inner(buf))
     }
@@ -299,16 +321,14 @@ impl<B: BufferedWrite> EncodingWriter<B> {
         debug_assert!(self.deferred_error.is_none());
         debug_assert!(self.buffer.unfilled().len() >= MIN_BUF_SIZE);
 
-        // SAFETY: `mem::transmute` is generally okay because `&[T]` and `&[MaybeUninit<T>]` have
-        // the same layout and `u8` is a trivial type. It is technically UB to create a mutable
-        // reference to an uninitialized byte buffer and pass it to a supposedly write-only
-        // function, though the following code mimics the approach taken by `encoding_rs` to
-        // implement the `encode_from_utf8_to_vec_*` methods.
-        let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
-            buf,
-            unsafe { mem::transmute(self.buffer.unfilled()) },
-            false,
-        );
+        // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout. The following code should
+        // be okay because it mimics the approach taken by `encoding_rs` to implement the
+        // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
+        // reference to an uninitialized buffer and pass it to a supposedly write-only function.
+        let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
+        let (result, consumed, written) = self
+            .encoder
+            .encode_from_utf8_without_replacement(buf, dst, false);
         unsafe { self.buffer.advance(written) };
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
@@ -580,6 +600,10 @@ impl<W: io::Write> BufferedWriter<W> {
         &self.inner
     }
 
+    fn buffer(&self) -> &[u8] {
+        &self.buffer
+    }
+
     fn into_parts(self) -> (W, Vec<u8>) {
         // destruct `self`, moving out some fields and dropping the rest
         unsafe {
@@ -707,10 +731,12 @@ mod tests {
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::SHIFT_JIS.new_encoder());
         assert!(matches!(writer.write_all("Oh🥺".as_bytes()), Ok(())));
         match writer.finish() {
-            (writer, buffer, Err(e)) => {
-                assert_eq!(writer, b"");
-                assert_eq!(buffer, b"Oh");
+            Err((buffer, mut iter)) => {
+                assert_eq!(buffer.get_ref(), b"");
+                assert_eq!(buffer.buffer(), b"Oh");
+                let e = iter.next().unwrap().unwrap_err();
                 assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
+                assert!(iter.next().is_none());
             }
             ret => panic!("assertion failed: {:?}", ret),
         };
@@ -724,9 +750,9 @@ mod tests {
             ret => panic!("assertion failed: {:?}", ret),
         };
         match writer.finish() {
-            (writer, buffer, Ok(())) => {
-                assert_eq!(writer, b"");
-                assert_eq!(buffer, b"Oh");
+            Ok(buffer) => {
+                assert_eq!(buffer.get_ref(), b"");
+                assert_eq!(buffer.buffer(), b"Oh");
             }
             ret => panic!("assertion failed: {:?}", ret),
         };
@@ -740,9 +766,9 @@ mod tests {
             ret => panic!("assertion failed: {:?}", ret),
         };
         match writer.finish() {
-            (writer, buffer, Ok(())) => {
-                assert_eq!(writer, b"");
-                assert_eq!(buffer, b"Oh");
+            Ok(buffer) => {
+                assert_eq!(buffer.get_ref(), b"");
+                assert_eq!(buffer.buffer(), b"Oh");
             }
             ret => panic!("assertion failed: {:?}", ret),
         };
@@ -750,10 +776,12 @@ mod tests {
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::EUC_KR.new_encoder());
         assert!(matches!(write!(writer, "Oh🥺"), Ok(())));
         match writer.finish() {
-            (writer, buffer, Err(e)) => {
-                assert_eq!(writer, b"");
-                assert_eq!(buffer, b"Oh");
+            Err((buffer, mut iter)) => {
+                assert_eq!(buffer.get_ref(), b"");
+                assert_eq!(buffer.buffer(), b"Oh");
+                let e = iter.next().unwrap().unwrap_err();
                 assert_eq!(UnmappableError::wrapped_in(&e).unwrap().value(), '🥺');
+                assert!(iter.next().is_none());
             }
             ret => panic!("assertion failed: {:?}", ret),
         };
@@ -786,10 +814,12 @@ mod tests {
         assert!(matches!(writer.passthrough().write(&[]), Ok(0)));
 
         match writer.finish() {
-            (writer, buffer, Err(e)) => {
-                assert_eq!(writer, &[]);
-                assert_eq!(buffer, &[b'A', b'B', b'C', b'D', 0xd7]);
+            Err((buffer, mut iter)) => {
+                assert_eq!(buffer.get_ref(), &[]);
+                assert_eq!(buffer.buffer(), &[b'A', b'B', b'C', b'D', 0xd7]);
+                let e = iter.next().unwrap().unwrap_err();
                 assert!(MalformedError::wrapped_in(&e).is_some());
+                assert!(iter.next().is_none());
             }
             ret => panic!("assertion failed: {:?}", ret),
         }
