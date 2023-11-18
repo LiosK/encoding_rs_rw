@@ -37,6 +37,7 @@ mod error;
 mod reader;
 mod writer;
 
+mod bufwriter;
 mod util;
 
 pub use error::{MalformedError, UnmappableError};
@@ -45,7 +46,8 @@ pub use writer::EncodingWriter;
 
 /// Miscellaneous types not intended for direct access by name.
 pub mod misc {
-    pub use super::writer::{BufferedWrite, BufferedWriter, PassthroughWriter};
+    pub use super::bufwriter::BufferedWriter;
+    pub use super::writer::{BufferedWrite, PassthroughWriter};
 }
 
 #[cfg(test)]

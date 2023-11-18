@@ -441,7 +441,7 @@ fn read_to_string_impl(
 /// while `encoding_rs::Decoder` might write zero bytes to the output buffer with such a small
 /// input byte slice.
 #[derive(Debug, Default)]
-pub struct BufReadWithFallbackBuffer<R> {
+struct BufReadWithFallbackBuffer<R> {
     inner: R,
     fallback_buf: util::MiniBuffer,
 }
@@ -456,15 +456,15 @@ impl<R: io::BufRead> From<R> for BufReadWithFallbackBuffer<R> {
 }
 
 impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
-    pub fn as_inner(&self) -> &R {
+    fn as_inner(&self) -> &R {
         &self.inner
     }
 
-    pub fn into_parts(self) -> (R, util::MiniBuffer) {
+    fn into_parts(self) -> (R, util::MiniBuffer) {
         (self.inner, self.fallback_buf)
     }
 
-    pub fn fill_buf(&mut self) -> io::Result<&[u8]> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if !self.fallback_buf.is_empty() {
             self.fallback_buf.fill_from_reader(&mut self.inner)?;
             return Ok(self.fallback_buf.as_ref());
@@ -484,7 +484,7 @@ impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
         Ok(self.fallback_buf.as_ref())
     }
 
-    pub fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, amt: usize) {
         let amt_fallback = amt.min(self.fallback_buf.len());
         if amt_fallback > 0 {
             self.fallback_buf.remove_front(amt_fallback);
