@@ -20,7 +20,7 @@ impl<W: io::Write> DefaultBuffer<W> {
         }
     }
 
-    /// Returns a reference to the buffered data.
+    /// Returns a reference to the unwritten buffered data.
     pub fn buffer(&self) -> &[u8] {
         &self.buffer
     }
@@ -30,25 +30,28 @@ impl<W: io::Write> DefaultBuffer<W> {
         &self.inner
     }
 
-    /// Returns the underlying writer.
+    /// Disassembles the structure and returns the underlying writer and unwritten buffered data.
     ///
-    /// This method consumes `self` and returns an error wrapping `self` when the attempt to flush
-    /// the internal buffer fails.
-    pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
-        match self.flush_buffer() {
-            // SAFETY: ok because all the fields are manually dropped or taken out of the scope
-            // while `ManuallyDrop` guarantees that they are not double-dropped
-            Ok(_) => unsafe {
-                debug_assert!(self.buffer.is_empty());
-                let mut m = mem::ManuallyDrop::new(self);
-                ptr::drop_in_place(&mut m.buffer);
-                ptr::drop_in_place(&mut m.panicked);
-                Ok(ptr::read(&m.inner))
-            },
-            Err(error) => Err(IntoInnerError {
-                error,
-                wrapper: self,
-            }),
+    /// If the underlying writer experienced panic in a previous call to write, this method wraps
+    /// the buffered data with the [`WriterPanicked`] error to signal the fact that the buffered
+    /// data might have been partly written to the underlying writer.
+    ///
+    /// This method does not attempt to flush the buffer.
+    pub fn into_parts(self) -> (W, Result<Vec<u8>, WriterPanicked>) {
+        // SAFETY: ok because all the fields are taken out of the scope while `ManuallyDrop`
+        // guarantees that they are not double-dropped
+        let (buffer, panicked, inner) = unsafe {
+            let m = mem::ManuallyDrop::new(self);
+            (
+                ptr::read(&m.buffer),
+                ptr::read(&m.panicked),
+                ptr::read(&m.inner),
+            )
+        };
+        if !panicked {
+            (inner, Ok(buffer))
+        } else {
+            (inner, Err(WriterPanicked { buffer }))
         }
     }
 
@@ -158,36 +161,25 @@ impl<W: io::Write> BufferedWrite for DefaultBuffer<W> {
     }
 }
 
-/// The error returned by [`DefaultBuffer::into_inner`] when the attempt to flush the internal
-/// buffer fails.
+/// The error returned by [`DefaultBuffer::into_parts`] when the underlying writer experienced
+/// panic in a call to write.
 #[derive(Debug)]
-pub struct IntoInnerError<T> {
-    error: io::Error,
-    wrapper: T,
+pub struct WriterPanicked {
+    buffer: Vec<u8>,
 }
 
-impl<T> IntoInnerError<T> {
-    /// Disassembles the structure and returns the error that caused `into_inner` to fail and the
-    /// original wrapping type value.
-    pub fn into_parts(self) -> (io::Error, T) {
-        (self.error, self.wrapper)
+impl WriterPanicked {
+    /// Returns the buffered data, which might have been partly written during a previous write
+    /// call that panicked.
+    pub fn into_inner(self) -> Vec<u8> {
+        self.buffer
     }
 }
 
-impl<T> fmt::Display for IntoInnerError<T> {
+impl fmt::Display for WriterPanicked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.error, f)
+        write!(f, "underlying writer experienced panic")
     }
 }
 
-impl<T: fmt::Debug> error::Error for IntoInnerError<T> {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        Some(&self.error)
-    }
-}
-
-impl<T> From<IntoInnerError<T>> for io::Error {
-    fn from(value: IntoInnerError<T>) -> Self {
-        value.error
-    }
-}
+impl error::Error for WriterPanicked {}

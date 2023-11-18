@@ -46,7 +46,7 @@ pub use writer::EncodingWriter;
 
 /// Miscellaneous types not intended for direct access by name.
 pub mod misc {
-    pub use super::buffer::{DefaultBuffer, IntoInnerError};
+    pub use super::buffer::{DefaultBuffer, WriterPanicked};
     pub use super::writer::{BufferedWrite, PassthroughWriter};
 }
 

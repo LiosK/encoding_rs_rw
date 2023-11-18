@@ -400,7 +400,7 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                writer.finish().unwrap().into_inner().unwrap()
+                writer.finish().unwrap().into_parts().0
             };
             assert_eq!(actual, c.encoded());
 
@@ -422,7 +422,7 @@ fn writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                writer.finish().unwrap().into_inner().unwrap()
+                writer.finish().unwrap().into_parts().0
             };
             assert_eq!(actual_byte_by_byte, c.encoded());
         }
@@ -443,7 +443,7 @@ fn writer_unmappable_char_with_handler() {
                     write!(writer, "{}", src).unwrap();
                     writer.flush().unwrap();
                 }
-                writer.finish().unwrap().into_inner().unwrap()
+                writer.finish().unwrap().into_parts().0
             };
             assert_eq!(actual_handler, c.encoded());
 
@@ -461,7 +461,7 @@ fn writer_unmappable_char_with_handler() {
                     }
                     writer.flush().unwrap();
                 }
-                writer.finish().unwrap().into_inner().unwrap()
+                writer.finish().unwrap().into_parts().0
             };
             assert_eq!(actual_handler_byte_by_byte, c.encoded());
         }
