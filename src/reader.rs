@@ -98,7 +98,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// Returns an unfused variant of this decoding reader that does not terminate the underlying
     /// decoder at EOF.
     ///
-    /// This variant is useful when the underlying reader might read more bytes after returning
+    /// This variant is useful when the underlying reader might pull more bytes after returning
     /// `Ok(0)` once.
     ///
     /// The returned reader has the same UTF-8 validity guarantee and error semantics as those of
@@ -153,10 +153,10 @@ impl<R: io::BufRead> DecodingReader<R> {
         VariantReader::<'_, _, true, true> { inner: self }
     }
 
-    /// Returns an unfused variant of this decoding reader that replaces a detected malformed byte
-    /// sequence but does not terminate the underlying decoder at EOF.
+    /// Returns a lossy unfused variant of this decoding reader that replaces a detected malformed
+    /// byte sequence but does not terminate the underlying decoder at EOF.
     ///
-    /// This variant is useful when the underlying reader might read more bytes after returning
+    /// This variant is useful when the underlying reader might pull more bytes after returning
     /// `Ok(0)` once.
     ///
     /// The returned reader has the same UTF-8 validity guarantee and error semantics as those of

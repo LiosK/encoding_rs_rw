@@ -472,7 +472,7 @@ impl<B: BufferedWrite> io::Write for EncodingWriter<B> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.realize_any_deferred_error()?;
+        self.realize_deferred_error_except_incomplete_utf8()?;
         self.buffer.flush()
     }
 
@@ -607,12 +607,12 @@ pub trait BufferedWrite: io::Write {
     /// Tries to reserve capacity for at least `minimum` more bytes.
     ///
     /// When this method returns `Ok(())`, the implementation must ensure the length of the slice
-    /// returned by `unfilled` is `minimum` or greater. The implementation may speculatively
-    /// reserve more space than `minimum` and is encouraged to reserve more than the `size_hint`
-    /// provided by the caller, though it may end up reserving less space than `size_hint` (but not
-    /// less than `minimum`). The implementation must return `Err` if it cannot reserve space of
-    /// `minimum` bytes and may also report `Err` if it encounters an error in reserving additional
-    /// memory, flushing the existing content, or any other operations.
+    /// returned by [`unfilled`](Self::unfilled) is `minimum` or greater. The implementation may
+    /// speculatively reserve more space than `minimum` and is encouraged to reserve more than the
+    /// `size_hint` provided by the caller, though it may end up reserving less space than
+    /// `size_hint` (but not less than `minimum`). The implementation must return `Err` if it
+    /// cannot reserve space of `minimum` bytes and may also report `Err` if it encounters an error
+    /// in reserving additional memory, flushing the existing content, or any other operations.
     fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()>;
 }
 
@@ -737,10 +737,7 @@ mod tests {
 
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_7.new_encoder());
         assert!(matches!(writer.write(&[0xc3]), Ok(1)));
-        assert!(match writer.flush() {
-            Err(e) => MalformedError::wrapped_in(&e).is_some(),
-            _ => false,
-        });
+        assert!(writer.flush().is_ok());
 
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_8859_15.new_encoder());
         assert!(matches!(
@@ -749,10 +746,7 @@ mod tests {
                 .write(&[0xc3]),
             Ok(1),
         ));
-        assert!(match writer.flush() {
-            Err(e) => MalformedError::wrapped_in(&e).is_some(),
-            _ => false,
-        });
+        assert!(writer.flush().is_ok());
     }
 
     #[test]
