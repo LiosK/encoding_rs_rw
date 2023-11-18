@@ -2,7 +2,7 @@ use std::{fmt, io, mem, str};
 
 use encoding_rs::Encoder;
 
-use super::{bufwriter, util, MalformedError, UnmappableError};
+use super::{buffer::DefaultBuffer, util, MalformedError, UnmappableError};
 
 const MIN_BUF_SIZE: usize = 32;
 
@@ -73,7 +73,7 @@ pub struct EncodingWriter<B> {
     deferred_error: Option<DefErr>,
 }
 
-impl<W: io::Write> EncodingWriter<bufwriter::BufferedWriter<W>> {
+impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     /// Creates a new encoding writer from a writer and an encoder.
     pub fn new(writer: W, encoder: Encoder) -> Self {
         // As of Rust 1.73.0: https://github.com/rust-lang/rust/blob/1.73.0/library/std/src/sys_common/io.rs#L3
@@ -88,7 +88,7 @@ impl<W: io::Write> EncodingWriter<bufwriter::BufferedWriter<W>> {
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
         let c = capacity.max(MIN_BUF_SIZE);
-        Self::with_buffer(bufwriter::BufferedWriter::with_capacity(c, writer), encoder)
+        Self::with_buffer(DefaultBuffer::with_capacity(c, writer), encoder)
     }
 
     /// Returns a reference to the underlying writer.
@@ -547,7 +547,7 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
     }
 }
 
-/// A trait abstracting the buffered byte writer that exposes its unfilled capacity as a slice.
+/// A trait abstracting the byte buffer that exposes its unfilled capacity as a slice.
 pub trait BufferedWrite: io::Write {
     /// Returns the unfilled buffer capacity as a slice.
     ///
@@ -572,8 +572,8 @@ pub trait BufferedWrite: io::Write {
     /// reserve more space than `minimum` and is encouraged to reserve more than the `size_hint`
     /// provided by the caller, though it may end up reserving less space than `size_hint` (but not
     /// less than `minimum`). The implementation must return `Err` if it cannot reserve space of
-    /// `minimum` bytes and may also report `Err` if it encounters an error in flushing the
-    /// existing content or any other operations.
+    /// `minimum` bytes and may also report `Err` if it encounters an error in reserving additional
+    /// memory, flushing the existing content, or any other operations.
     fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()>;
 }
 
