@@ -2,53 +2,45 @@ use std::io::{self, prelude::*};
 
 use encoding_rs::{BIG5, EUC_JP, EUC_KR, ISO_2022_JP, ISO_8859_15, SHIFT_JIS};
 
-use crate::{DecodingReader, EncodingWriter, MalformedError, UnmappableError};
+use crate::{misc, DecodingReader, EncodingWriter, MalformedError, UnmappableError};
 
 /// Tests the reader's high level API usage.
 #[test]
 fn reader_high_level_api() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader =
-                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            reader_high_level_api_impl(c, &mut reader);
-        }
+    for_each_test_case(|c| {
+        let mut reader =
+            DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+        reader_high_level_api_impl(c, &mut reader);
     });
 }
 
 /// Tests the lossy reader's high level API usage.
 #[test]
 fn lossy_reader_high_level_api() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader =
-                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            reader_high_level_api_impl(c, &mut reader.lossy());
-        }
+    for_each_test_case(|c| {
+        let mut reader =
+            DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+        reader_high_level_api_impl(c, &mut reader.lossy());
     });
 }
 
 /// Tests the unfused reader's high level API usage.
 #[test]
 fn unfused_reader_high_level_api() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader =
-                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            reader_high_level_api_impl(c, &mut reader.unfused());
-        }
+    for_each_test_case(|c| {
+        let mut reader =
+            DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+        reader_high_level_api_impl(c, &mut reader.unfused());
     });
 }
 
 /// Tests the lossy unfused reader's high level API usage.
 #[test]
 fn lossy_unfused_reader_high_level_api() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader =
-                DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
-            reader_high_level_api_impl(c, &mut reader.lossy_unfused());
-        }
+    for_each_test_case(|c| {
+        let mut reader =
+            DecodingReader::new(io::BufReader::new(c.encoded()), c.encoding.new_decoder());
+        reader_high_level_api_impl(c, &mut reader.lossy_unfused());
     });
 }
 
@@ -68,11 +60,8 @@ where
 fn writer_high_level_api() {
     TEST_CASES.with(|cs| {
         for c in cs {
-            let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
-            write!(writer, "{}", c.decoded()).unwrap();
-            writer.flush().unwrap();
-            assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(writer.finish().is_ok());
+            let writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
+            writer_high_level_api_impl(c, writer);
         }
     });
 }
@@ -80,70 +69,69 @@ fn writer_high_level_api() {
 /// Tests the writer's high level API usage without buffering.
 #[test]
 fn unbuffered_writer_high_level_api() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
-            write!(writer, "{}", c.decoded()).unwrap();
-            writer.flush().unwrap();
-            assert_eq!(writer.buffer_ref(), c.encoded());
-            assert!(writer.finish().is_ok());
-        }
+    for_each_test_case(|c| {
+        let writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+        writer_high_level_api_impl(c, writer);
     });
+}
+
+fn writer_high_level_api_impl<D, E, B>(c: &TestCase<D, E>, mut writer: EncodingWriter<B>)
+where
+    D: AsRef<str>,
+    E: AsRef<[u8]>,
+    B: AsRef<[u8]> + misc::BufferedWrite,
+{
+    write!(writer, "{}", c.decoded()).unwrap();
+    writer.flush().unwrap();
+    assert_eq!(writer.as_ref(), c.encoded());
+    assert!(writer.finish().is_ok());
 }
 
 /// Tests the reader for byte-by-byte streaming.
 #[test]
 fn reader_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader = DecodingReader::new(
-                io::BufReader::with_capacity(1, c.encoded()),
-                c.encoding.new_decoder(),
-            );
-            reader_byte_by_byte_impl(c, &mut reader);
-        }
+    for_each_test_case(|c| {
+        let mut reader = DecodingReader::new(
+            io::BufReader::with_capacity(1, c.encoded()),
+            c.encoding.new_decoder(),
+        );
+        reader_byte_by_byte_impl(c, &mut reader);
     });
 }
 
 /// Tests the lossy reader for byte-by-byte streaming.
 #[test]
 fn lossy_reader_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader = DecodingReader::new(
-                io::BufReader::with_capacity(1, c.encoded()),
-                c.encoding.new_decoder(),
-            );
-            reader_byte_by_byte_impl(c, &mut reader.lossy());
-        }
+    for_each_test_case(|c| {
+        let mut reader = DecodingReader::new(
+            io::BufReader::with_capacity(1, c.encoded()),
+            c.encoding.new_decoder(),
+        );
+        reader_byte_by_byte_impl(c, &mut reader.lossy());
     });
 }
 
 /// Tests the unfused reader for byte-by-byte streaming.
 #[test]
 fn unfused_reader_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader = DecodingReader::new(
-                io::BufReader::with_capacity(1, c.encoded()),
-                c.encoding.new_decoder(),
-            );
-            reader_byte_by_byte_impl(c, &mut reader.unfused());
-        }
+    for_each_test_case(|c| {
+        let mut reader = DecodingReader::new(
+            io::BufReader::with_capacity(1, c.encoded()),
+            c.encoding.new_decoder(),
+        );
+        reader_byte_by_byte_impl(c, &mut reader.unfused());
     });
 }
 
 /// Tests the lossy unfused reader for byte-by-byte streaming.
 #[test]
 fn lossy_unfused_reader_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut reader = DecodingReader::new(
-                io::BufReader::with_capacity(1, c.encoded()),
-                c.encoding.new_decoder(),
-            );
-            reader_byte_by_byte_impl(c, &mut reader.lossy_unfused());
-        }
+    for_each_test_case(|c| {
+        let mut reader = DecodingReader::new(
+            io::BufReader::with_capacity(1, c.encoded()),
+            c.encoding.new_decoder(),
+        );
+        reader_byte_by_byte_impl(c, &mut reader.lossy_unfused());
     });
 }
 
@@ -168,41 +156,37 @@ where
 /// Tests the writer for byte-by-byte streaming.
 #[test]
 fn writer_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
-            let mut src = c.decoded().as_bytes();
-            while !src.is_empty() {
-                match writer.write(&src[..1]) {
-                    Ok(1) => src = &src[1..],
-                    ret => panic!("assertion failed: {:?}", ret),
-                }
-            }
-            writer.flush().unwrap();
-            assert_eq!(writer.writer_ref(), c.encoded());
-            assert!(writer.finish().is_ok());
-        }
+    for_each_test_case(|c| {
+        let writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
+        writer_byte_by_byte_impl(c, writer);
     });
 }
 
 /// Tests the writer for byte-by-byte streaming without buffering.
 #[test]
 fn unbuffered_writer_byte_by_byte() {
-    TEST_CASES.with(|cs| {
-        for c in cs {
-            let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
-            let mut src = c.decoded().as_bytes();
-            while !src.is_empty() {
-                match writer.write(&src[..1]) {
-                    Ok(1) => src = &src[1..],
-                    ret => panic!("assertion failed: {:?}", ret),
-                }
-            }
-            writer.flush().unwrap();
-            assert_eq!(writer.buffer_ref(), c.encoded());
-            assert!(writer.finish().is_ok());
-        }
+    for_each_test_case(|c| {
+        let writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+        writer_byte_by_byte_impl(c, writer);
     });
+}
+
+fn writer_byte_by_byte_impl<D, E, B>(c: &TestCase<D, E>, mut writer: EncodingWriter<B>)
+where
+    D: AsRef<str>,
+    E: AsRef<[u8]>,
+    B: AsRef<[u8]> + misc::BufferedWrite,
+{
+    let mut src = c.decoded().as_bytes();
+    while !src.is_empty() {
+        match writer.write(&src[..1]) {
+            Ok(1) => src = &src[1..],
+            ret => panic!("assertion failed: {:?}", ret),
+        }
+    }
+    writer.flush().unwrap();
+    assert_eq!(writer.as_ref(), c.encoded());
+    assert!(writer.finish().is_ok());
 }
 
 /// Emulates the replacement behavior of `encoding_rs::Decoder`.
@@ -557,6 +541,10 @@ fn unbuffered_writer_unmappable_char_with_handler() {
             assert_eq!(actual_handler_byte_by_byte, c.encoded());
         }
     });
+}
+
+fn for_each_test_case(f: impl FnMut(&TestCase<&str, Vec<u8>>)) {
+    TEST_CASES.with(|cs| cs.iter().for_each(f));
 }
 
 static TEXT: &str = include_str!("text_ja.txt");
