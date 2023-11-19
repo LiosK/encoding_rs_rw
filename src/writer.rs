@@ -77,6 +77,9 @@ pub struct EncodingWriter<B> {
 
 impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     /// Creates a new encoding writer from a writer and an encoder.
+    ///
+    /// This constructor wraps the specified writer with [`DefaultBuffer`], and accordingly, the
+    /// encoded bytes are not written to the underlying writer until the buffer becomes full.
     pub fn new(writer: W, encoder: Encoder) -> Self {
         // As of Rust 1.73.0: https://github.com/rust-lang/rust/blob/1.73.0/library/std/src/sys_common/io.rs#L3
         const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") {
@@ -88,6 +91,9 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     }
 
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
+    ///
+    /// This constructor wraps the specified writer with [`DefaultBuffer`], and accordingly, the
+    /// encoded bytes are not written to the underlying writer until the buffer becomes full.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
         let c = capacity.max(MIN_BUF_SIZE);
         Self::with_buffer(DefaultBuffer::with_capacity(c, writer), encoder)
@@ -181,7 +187,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
 
         let result = if seq.is_empty() {
             // SAFETY: should be okay but technically UB (see notes in `write_str_inner`)
-            let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
+            let dst: &mut [u8] = unsafe { mem::transmute(self.buffer.unfilled()) };
             let (result, _consumed, written) = self
                 .encoder
                 .encode_from_utf8_without_replacement("", dst, true);
@@ -298,7 +304,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     ///     let mut writer =
     ///         writer.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
     ///     write!(writer, "Boo!👻")?;
-    ///     writer.flush()?;
+    ///     writer.flush()?; // important
     /// }
     /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
     /// # Ok::<(), std::io::Error>(())
@@ -366,7 +372,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
         // be okay because it mimics the approach taken by `encoding_rs` to implement the
         // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
         // reference to an uninitialized buffer and pass it to a supposedly write-only function.
-        let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
+        let dst: &mut [u8] = unsafe { mem::transmute(self.buffer.unfilled()) };
         let (result, consumed, written) = self
             .encoder
             .encode_from_utf8_without_replacement(buf, dst, false);
