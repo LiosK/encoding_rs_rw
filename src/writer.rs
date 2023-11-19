@@ -801,4 +801,29 @@ mod tests {
         }
         assert_eq!(writer.writer_ref(), b"Boo!");
     }
+
+    /// Tests `encoding_rs`'s undocumented guarantee that the ISO-2022-JP encoder is reset to the
+    /// ASCII state when an unmappable character is encountered.
+    #[test]
+    fn iso_2022_jp_at_unmappable() {
+        let text = "🐀Lorem ip🐁sum恥の多い🐂生涯をdolor sit 🐃amet送って🐄来ました🐅";
+        let expected = {
+            let mut dst = Vec::with_capacity(text.len() * 2);
+            let mut encoder = encoding_rs::ISO_2022_JP.new_encoder();
+            let (result, ..) = encoder.encode_from_utf8_to_vec(text, &mut dst, false);
+            assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
+            dst
+        };
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_2022_JP.new_encoder());
+        {
+            let mut writer = writer.with_unmappable_handler(|e, w| {
+                assert!(!w.encoding_writer_ref().encoder_ref().has_pending_state());
+                write!(w, "&#{};", u32::from(e.value()))
+            });
+            write!(writer, "{}", text).unwrap();
+            writer.flush().unwrap();
+        }
+        assert_eq!(writer.writer_ref(), &expected);
+    }
 }
