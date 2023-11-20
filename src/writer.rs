@@ -186,8 +186,13 @@ impl<B: BufferedWrite> EncodingWriter<B> {
         }
 
         let result = if seq.is_empty() {
+            let unfilled = self.buffer.unfilled();
+            assert!(
+                unfilled.len() >= max_remainder_len,
+                "illegal `BufferedWrite` implementation"
+            );
             // SAFETY: should be okay but technically UB (see notes in `write_str_inner`)
-            let dst: &mut [u8] = unsafe { mem::transmute(self.buffer.unfilled()) };
+            let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
             let (result, _consumed, written) = self
                 .encoder
                 .encode_from_utf8_without_replacement("", dst, true);
@@ -366,13 +371,17 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
-        debug_assert!(self.buffer.unfilled().len() >= MIN_BUF_SIZE);
 
+        let unfilled = self.buffer.unfilled();
+        assert!(
+            unfilled.len() >= MIN_BUF_SIZE,
+            "illegal `BufferedWrite` implementation"
+        );
         // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout. The following code should
         // be okay because it mimics the approach taken by `encoding_rs` to implement the
         // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
         // reference to an uninitialized buffer and pass it to a supposedly write-only function.
-        let dst: &mut [u8] = unsafe { mem::transmute(self.buffer.unfilled()) };
+        let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
         let (result, consumed, written) = self
             .encoder
             .encode_from_utf8_without_replacement(buf, dst, false);
