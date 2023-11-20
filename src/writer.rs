@@ -185,29 +185,24 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             seq.push(Err(e));
         }
 
-        let result = if seq.is_empty() {
-            let unfilled = self.buffer.unfilled();
-            assert!(
-                unfilled.len() >= max_remainder_len,
-                "illegal `BufferedWrite` implementation"
-            );
-            // SAFETY: should be okay but technically UB (see notes in `write_str_inner`)
-            let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
-            let (result, _consumed, written) = self
-                .encoder
-                .encode_from_utf8_without_replacement("", dst, true);
-            unsafe { self.buffer.advance(written) };
-            result
-        } else {
-            let mut dst = Vec::with_capacity(max_remainder_len);
-            let (result, _consumed) = self
-                .encoder
-                .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
-            if !dst.is_empty() {
+        let mut dst = Vec::with_capacity(max_remainder_len);
+        let (result, _consumed) = self
+            .encoder
+            .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
+        if !dst.is_empty() {
+            if seq.is_empty() {
+                // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
+                self.buffer
+                    .unfilled()
+                    .get_mut(..dst.len())
+                    .expect("illegal `BufferedWrite` implementation")
+                    .copy_from_slice(unsafe { mem::transmute(dst.as_slice()) });
+                // SAFETY: `dst.len()` elements have just been initialized by `copy_from_slice`
+                unsafe { self.buffer.advance(dst.len()) };
+            } else {
                 seq.push(Ok(dst));
             }
-            result
-        };
+        }
 
         if let encoding_rs::EncoderResult::Unmappable(c) = result {
             seq.push(Err(UnmappableError::new(c).wrap()));
