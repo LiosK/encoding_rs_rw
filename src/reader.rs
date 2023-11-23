@@ -13,7 +13,8 @@ use super::{util, MalformedError};
 /// always so, especially when the output buffer is less than four bytes in length. In such a case,
 /// this reader may fill the given buffer with a character fragment in order not to return `Ok(0)`.
 /// When this reader reaches EOF or returns `Err`, the byte sequence read so far, as a whole from
-/// the beginning, is guaranteed to be valid UTF-8.
+/// the beginning, is guaranteed to be valid UTF-8. [`read_to_string`] is specialized to utilize
+/// this guarantee to eliminate excessive UTF-8 validation.
 ///
 /// This reader reports [`MalformedError`] when it encounters a malformed byte sequence in the
 /// input. This error is non-fatal, and the reader can continue to decode the subsequent bytes by
@@ -25,6 +26,7 @@ use super::{util, MalformedError};
 /// when the underlying reader reports EOF. See [`unfused`] for a variant of this reader that keeps
 /// the decoder active and waits for the subsequent bytes from the underlying reader.
 ///
+/// [`read_to_string`]: io::Read::read_to_string
 /// [`lossy`]: Self::lossy
 /// [`unfused`]: Self::unfused
 ///

@@ -4,6 +4,9 @@ use super::writer::BufferedWrite;
 
 /// A [`BufWriter`](io::BufWriter)-like type that exposes its unfilled capacity as a slice through
 /// [`BufferedWrite`] trait.
+///
+/// Like `BufWriter`, this structure stores the written bytes in its internal buffer and writes
+/// them into the underlying writer when dropped or when the buffer becomes full.
 #[derive(Debug)]
 pub struct DefaultBuffer<W: io::Write> {
     buffer: Vec<u8>,

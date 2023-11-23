@@ -77,6 +77,9 @@ pub struct EncodingWriter<B> {
 
 impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     /// Creates a new encoding writer from a writer and an encoder.
+    ///
+    /// This constructor wraps the specified writer with [`DefaultBuffer`], and accordingly, the
+    /// encoded bytes are not written to the underlying writer until the buffer becomes full.
     pub fn new(writer: W, encoder: Encoder) -> Self {
         // As of Rust 1.73.0: https://github.com/rust-lang/rust/blob/1.73.0/library/std/src/sys_common/io.rs#L3
         const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") {
@@ -88,6 +91,9 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
     }
 
     /// Creates a new encoding writer with an internal buffer of at least the specified capacity.
+    ///
+    /// This constructor wraps the specified writer with [`DefaultBuffer`], and accordingly, the
+    /// encoded bytes are not written to the underlying writer until the buffer becomes full.
     pub fn with_capacity(capacity: usize, writer: W, encoder: Encoder) -> Self {
         let c = capacity.max(MIN_BUF_SIZE);
         Self::with_buffer(DefaultBuffer::with_capacity(c, writer), encoder)
@@ -179,24 +185,24 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             seq.push(Err(e));
         }
 
-        let result = if seq.is_empty() {
-            // SAFETY: should be okay but technically UB (see notes in `write_str_inner`)
-            let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
-            let (result, _consumed, written) = self
-                .encoder
-                .encode_from_utf8_without_replacement("", dst, true);
-            unsafe { self.buffer.advance(written) };
-            result
-        } else {
-            let mut dst = Vec::with_capacity(max_remainder_len);
-            let (result, _consumed) = self
-                .encoder
-                .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
-            if !dst.is_empty() {
+        let mut dst = Vec::with_capacity(max_remainder_len);
+        let (result, _consumed) = self
+            .encoder
+            .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
+        if !dst.is_empty() {
+            if seq.is_empty() {
+                // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
+                self.buffer
+                    .unfilled()
+                    .get_mut(..dst.len())
+                    .expect("illegal `BufferedWrite` implementation")
+                    .copy_from_slice(unsafe { mem::transmute(dst.as_slice()) });
+                // SAFETY: `dst.len()` elements have just been initialized by `copy_from_slice`
+                unsafe { self.buffer.advance(dst.len()) };
+            } else {
                 seq.push(Ok(dst));
             }
-            result
-        };
+        }
 
         if let encoding_rs::EncoderResult::Unmappable(c) = result {
             seq.push(Err(UnmappableError::new(c).wrap()));
@@ -298,7 +304,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     ///     let mut writer =
     ///         writer.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
     ///     write!(writer, "Boo!👻")?;
-    ///     writer.flush()?;
+    ///     writer.flush()?; // important
     /// }
     /// assert_eq!(writer.writer_ref(), b"Boo!&#128123;");
     /// # Ok::<(), std::io::Error>(())
@@ -360,13 +366,17 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     fn write_str_inner(&mut self, buf: &str) -> usize {
         debug_assert!(!buf.is_empty());
         debug_assert!(self.deferred_error.is_none());
-        debug_assert!(self.buffer.unfilled().len() >= MIN_BUF_SIZE);
 
+        let unfilled = self.buffer.unfilled();
+        assert!(
+            unfilled.len() >= MIN_BUF_SIZE,
+            "illegal `BufferedWrite` implementation"
+        );
         // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout. The following code should
         // be okay because it mimics the approach taken by `encoding_rs` to implement the
         // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
         // reference to an uninitialized buffer and pass it to a supposedly write-only function.
-        let dst = unsafe { mem::transmute(self.buffer.unfilled()) };
+        let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
         let (result, consumed, written) = self
             .encoder
             .encode_from_utf8_without_replacement(buf, dst, false);
@@ -800,5 +810,30 @@ mod tests {
                 .is_some());
         }
         assert_eq!(writer.writer_ref(), b"Boo!");
+    }
+
+    /// Tests `encoding_rs`'s undocumented guarantee that the ISO-2022-JP encoder is reset to the
+    /// ASCII state when an unmappable character is encountered.
+    #[test]
+    fn iso_2022_jp_at_unmappable() {
+        let text = "🐀Lorem ip🐁sum恥の多い🐂生涯をdolor sit 🐃amet送って🐄来ました🐅";
+        let expected = {
+            let mut dst = Vec::with_capacity(text.len() * 2);
+            let mut encoder = encoding_rs::ISO_2022_JP.new_encoder();
+            let (result, ..) = encoder.encode_from_utf8_to_vec(text, &mut dst, false);
+            assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
+            dst
+        };
+
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_2022_JP.new_encoder());
+        {
+            let mut writer = writer.with_unmappable_handler(|e, w| {
+                assert!(!w.encoding_writer_ref().encoder_ref().has_pending_state());
+                write!(w, "&#{};", u32::from(e.value()))
+            });
+            write!(writer, "{}", text).unwrap();
+            writer.flush().unwrap();
+        }
+        assert_eq!(writer.writer_ref(), &expected);
     }
 }

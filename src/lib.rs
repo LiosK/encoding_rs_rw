@@ -75,6 +75,4 @@ mod vec_integration {
 }
 
 #[cfg(test)]
-mod tests {
-    mod ja;
-}
+mod tests;
