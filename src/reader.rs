@@ -201,7 +201,7 @@ impl<R: io::BufRead> DecodingReader<R> {
         if !self.fallback_buf.is_empty() {
             // flush internal buffer if it contains leftovers from previous call; return early to
             // keep this cold path simple even if `buf` has remaining space to read more bytes
-            return Ok(self.fallback_buf.read_buf(buf));
+            return Ok(self.fallback_buf.read_to_slice(buf));
         } else if let Some(e) = self.deferred_error.take() {
             return if !LOSSY {
                 // report the error that has been deferred until all the decoded bytes (including
@@ -216,7 +216,7 @@ impl<R: io::BufRead> DecodingReader<R> {
                     Ok(REPL.len())
                 } else {
                     self.fallback_buf.fill_from_slice(REPL);
-                    Ok(self.fallback_buf.read_buf(buf))
+                    Ok(self.fallback_buf.read_to_slice(buf))
                 }
             };
         } else if self.decoder.is_none() || buf.is_empty() {
@@ -382,7 +382,7 @@ fn decode_with_fallback_buf<T>(
         let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
         if written > 0 {
             fallback_buf.add_len(written);
-            written = fallback_buf.read_buf(dst_buf);
+            written = fallback_buf.read_to_slice(dst_buf);
         }
         (result, consumed, written)
     }

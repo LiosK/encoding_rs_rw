@@ -4,7 +4,7 @@ use encoding_rs::{Decoder, Encoder};
 
 /// A `Vec`-like struct that handles a tiny stack-allocated byte array.
 #[derive(Debug, Default)]
-pub struct MiniBuffer {
+pub(crate) struct MiniBuffer {
     len: u8,
     buf: [u8; 7],
 }
@@ -49,14 +49,14 @@ impl MiniBuffer {
 
     /// Reads bytes from the internal buffer to fill the specified buffer, returning the number of
     /// bytes read.
-    pub fn read_buf(&mut self, buf: &mut [u8]) -> usize {
+    pub fn read_to_slice(&mut self, buf: &mut [u8]) -> usize {
         let n = self.len().min(buf.len());
         buf[..n].copy_from_slice(&self.buf[..n]);
         self.remove_front(n);
         n
     }
 
-    /// Reads as many bytes as possible from a reader to the spare capacity.
+    /// Writes as many bytes as possible pulled from a reader into the spare capacity.
     pub fn fill_from_reader(&mut self, reader: &mut impl io::Read) -> io::Result<()> {
         while self.spare_capacity_len() > 0 {
             match reader.read(self.spare_capacity_mut()) {
@@ -69,8 +69,8 @@ impl MiniBuffer {
         Ok(())
     }
 
-    /// Reads as many bytes as possible from a slice to the spare capacity, returning the number of
-    /// bytes consumed.
+    /// Writes as many bytes as possible copied from a slice into the spare capacity, returning the
+    /// number of bytes consumed.
     pub fn fill_from_slice(&mut self, buf: &[u8]) -> usize {
         let n = self.spare_capacity_len().min(buf.len());
         self.spare_capacity_mut()[..n].copy_from_slice(&buf[..n]);
