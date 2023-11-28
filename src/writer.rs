@@ -185,11 +185,12 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             seq.push(Err(e));
         }
 
-        let mut dst = Vec::with_capacity(max_remainder_len);
-        let (result, _consumed) = self
+        let mut dst = vec![0; max_remainder_len];
+        let (result, _consumed, written) = self
             .encoder
-            .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
-        if !dst.is_empty() {
+            .encode_from_utf8_without_replacement("", &mut dst, true);
+        if written > 0 {
+            dst.truncate(written);
             if seq.is_empty() {
                 // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
                 self.buffer
@@ -372,14 +373,18 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             unfilled.len() >= MIN_BUF_SIZE,
             "illegal `BufferedWrite` implementation"
         );
-        // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout. The following code should
-        // be okay because it mimics the approach taken by `encoding_rs` to implement the
-        // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
-        // reference to an uninitialized buffer and pass it to a supposedly write-only function.
-        let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
-        let (result, consumed, written) = self
-            .encoder
-            .encode_from_utf8_without_replacement(buf, dst, false);
+        // SAFETY: The following code should be okay because it mimics the approach taken by
+        // `encoding_rs` to implement the `encode_from_utf8_to_vec_*` methods; however, it is
+        // definitely (but controversially) UB to create a mutable reference to an uninitialized
+        // byte buffer and pass it to a supposedly write-only function. See also:
+        //
+        // - https://github.com/hsivonen/encoding_rs/issues/79
+        // - https://github.com/rust-lang/unsafe-code-guidelines/issues/71
+        let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
+            buf,
+            unsafe { slice_assume_init_mut_u8(unfilled) },
+            false,
+        );
         unsafe { self.buffer.advance(written) };
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
@@ -536,6 +541,11 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
         }
         Err(e) => Err(e.error_len()),
     }
+}
+
+unsafe fn slice_assume_init_mut_u8(slice: &mut [mem::MaybeUninit<u8>]) -> &mut [u8] {
+    // SAFETY: see `std::mem::MaybeUninit::slice_assume_init_mut`
+    &mut *(slice as *mut [mem::MaybeUninit<u8>] as *mut [u8])
 }
 
 trait WriteFmtAdapter {
@@ -810,6 +820,24 @@ mod tests {
                 .is_some());
         }
         assert_eq!(writer.writer_ref(), b"Boo!");
+    }
+
+    #[test]
+    fn finish_iso_2022_jp() {
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_2022_JP.new_encoder());
+        write!(writer, "あ").unwrap();
+        assert_eq!(writer.write(&[0xff]).unwrap(), 1);
+        match writer.finish() {
+            Err((buffer, mut iter)) => {
+                assert_eq!(buffer.get_ref(), &[]);
+                assert_eq!(buffer.buffer(), &[27, 36, 66, 36, 34]);
+                let e = iter.next().unwrap().unwrap_err();
+                assert!(MalformedError::wrapped_in(&e).is_some());
+                assert_eq!(iter.next().unwrap().unwrap(), &[27, 40, 66]);
+                assert!(iter.next().is_none());
+            }
+            ret => panic!("assertion failed: {:?}", ret),
+        }
     }
 
     /// Tests `encoding_rs`'s undocumented guarantee that the ISO-2022-JP encoder is reset to the

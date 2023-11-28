@@ -85,11 +85,11 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// In addition to the underlying reader, this method returns a _leftover_ reader that delivers
     /// the bytes already consumed from the underlying reader but not yet read by the caller.
     pub fn take_reader(self) -> (R, DecodingReader<impl io::BufRead>) {
-        let (reader, remainder) = self.reader.into_parts();
+        let (reader, remainder) = self.reader.take_inner();
         (
             reader,
             DecodingReader {
-                reader: io::Cursor::new(remainder).into(),
+                reader: remainder,
                 decoder: self.decoder,
                 fallback_buf: self.fallback_buf,
                 deferred_error: self.deferred_error,
@@ -201,7 +201,7 @@ impl<R: io::BufRead> DecodingReader<R> {
         if !self.fallback_buf.is_empty() {
             // flush internal buffer if it contains leftovers from previous call; return early to
             // keep this cold path simple even if `buf` has remaining space to read more bytes
-            return Ok(self.fallback_buf.read_buf(buf));
+            return Ok(self.fallback_buf.read_to_slice(buf));
         } else if let Some(e) = self.deferred_error.take() {
             return if !LOSSY {
                 // report the error that has been deferred until all the decoded bytes (including
@@ -216,7 +216,7 @@ impl<R: io::BufRead> DecodingReader<R> {
                     Ok(REPL.len())
                 } else {
                     self.fallback_buf.fill_from_slice(REPL);
-                    Ok(self.fallback_buf.read_buf(buf))
+                    Ok(self.fallback_buf.read_to_slice(buf))
                 }
             };
         } else if self.decoder.is_none() || buf.is_empty() {
@@ -382,7 +382,7 @@ fn decode_with_fallback_buf<T>(
         let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
         if written > 0 {
             fallback_buf.add_len(written);
-            written = fallback_buf.read_buf(dst_buf);
+            written = fallback_buf.read_to_slice(dst_buf);
         }
         (result, consumed, written)
     }
@@ -462,8 +462,15 @@ impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
         &self.inner
     }
 
-    fn into_parts(self) -> (R, util::MiniBuffer) {
-        (self.inner, self.fallback_buf)
+    /// Extracts the inner reader, leaving `std::io::Empty` in place.
+    fn take_inner(self) -> (R, BufReadWithFallbackBuffer<io::Empty>) {
+        (
+            self.inner,
+            BufReadWithFallbackBuffer {
+                inner: io::empty(),
+                fallback_buf: self.fallback_buf,
+            },
+        )
     }
 
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
