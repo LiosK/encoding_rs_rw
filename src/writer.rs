@@ -372,14 +372,18 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             unfilled.len() >= MIN_BUF_SIZE,
             "illegal `BufferedWrite` implementation"
         );
-        // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout. The following code should
-        // be okay because it mimics the approach taken by `encoding_rs` to implement the
-        // `encode_from_utf8_to_vec_*` methods; however, it is technically UB to create a mutable
-        // reference to an uninitialized buffer and pass it to a supposedly write-only function.
-        let dst: &mut [u8] = unsafe { mem::transmute(unfilled) };
-        let (result, consumed, written) = self
-            .encoder
-            .encode_from_utf8_without_replacement(buf, dst, false);
+        // SAFETY: The following code should be okay because it mimics the approach taken by
+        // `encoding_rs` to implement the `encode_from_utf8_to_vec_*` methods; however, it is
+        // definitely (but controversially) UB to create a mutable reference to an uninitialized
+        // byte buffer and pass it to a supposedly write-only function. See also:
+        //
+        // - https://github.com/hsivonen/encoding_rs/issues/79
+        // - https://github.com/rust-lang/unsafe-code-guidelines/issues/71
+        let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
+            buf,
+            unsafe { slice_assume_init_mut_u8(unfilled) },
+            false,
+        );
         unsafe { self.buffer.advance(written) };
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
@@ -536,6 +540,11 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
         }
         Err(e) => Err(e.error_len()),
     }
+}
+
+unsafe fn slice_assume_init_mut_u8(slice: &mut [mem::MaybeUninit<u8>]) -> &mut [u8] {
+    // SAFETY: see `std::mem::MaybeUninit::slice_assume_init_mut`
+    &mut *(slice as *mut [mem::MaybeUninit<u8>] as *mut [u8])
 }
 
 trait WriteFmtAdapter {
