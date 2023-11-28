@@ -185,11 +185,12 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             seq.push(Err(e));
         }
 
-        let mut dst = Vec::with_capacity(max_remainder_len);
-        let (result, _consumed) = self
+        let mut dst = vec![0; max_remainder_len];
+        let (result, _consumed, written) = self
             .encoder
-            .encode_from_utf8_to_vec_without_replacement("", &mut dst, true);
-        if !dst.is_empty() {
+            .encode_from_utf8_without_replacement("", &mut dst, true);
+        if written > 0 {
+            dst.truncate(written);
             if seq.is_empty() {
                 // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
                 self.buffer
