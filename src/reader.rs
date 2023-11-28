@@ -85,11 +85,11 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// In addition to the underlying reader, this method returns a _leftover_ reader that delivers
     /// the bytes already consumed from the underlying reader but not yet read by the caller.
     pub fn take_reader(self) -> (R, DecodingReader<impl io::BufRead>) {
-        let (reader, remainder) = self.reader.into_parts();
+        let (reader, remainder) = self.reader.take_inner();
         (
             reader,
             DecodingReader {
-                reader: io::Cursor::new(remainder).into(),
+                reader: remainder,
                 decoder: self.decoder,
                 fallback_buf: self.fallback_buf,
                 deferred_error: self.deferred_error,
@@ -462,8 +462,15 @@ impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
         &self.inner
     }
 
-    fn into_parts(self) -> (R, util::MiniBuffer) {
-        (self.inner, self.fallback_buf)
+    /// Extracts the inner reader, leaving `std::io::Empty` in place.
+    fn take_inner(self) -> (R, BufReadWithFallbackBuffer<io::Empty>) {
+        (
+            self.inner,
+            BufReadWithFallbackBuffer {
+                inner: io::empty(),
+                fallback_buf: self.fallback_buf,
+            },
+        )
     }
 
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
