@@ -812,6 +812,24 @@ mod tests {
         assert_eq!(writer.writer_ref(), b"Boo!");
     }
 
+    #[test]
+    fn finish_iso_2022_jp() {
+        let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::ISO_2022_JP.new_encoder());
+        write!(writer, "あ").unwrap();
+        assert_eq!(writer.write(&[0xff]).unwrap(), 1);
+        match writer.finish() {
+            Err((buffer, mut iter)) => {
+                assert_eq!(buffer.get_ref(), &[]);
+                assert_eq!(buffer.buffer(), &[27, 36, 66, 36, 34]);
+                let e = iter.next().unwrap().unwrap_err();
+                assert!(MalformedError::wrapped_in(&e).is_some());
+                assert_eq!(iter.next().unwrap().unwrap(), &[27, 40, 66]);
+                assert!(iter.next().is_none());
+            }
+            ret => panic!("assertion failed: {:?}", ret),
+        }
+    }
+
     /// Tests `encoding_rs`'s undocumented guarantee that the ISO-2022-JP encoder is reset to the
     /// ASCII state when an unmappable character is encountered.
     #[test]
