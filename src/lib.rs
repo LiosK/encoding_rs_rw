@@ -77,15 +77,16 @@ pub mod misc {
 
 /// Implements `BufferedWrite` for `Vec<u8>`.
 mod vec_integration {
-    use std::{io, mem};
+    use std::io;
 
     impl super::writer::BufferedWrite for Vec<u8> {
-        fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
-            self.spare_capacity_mut()
+        fn unfilled(&mut self) -> &mut [u8] {
+            // SAFETY: UB!
+            unsafe { super::slice_assume_init_mut_u8(self.spare_capacity_mut()) }
         }
 
-        unsafe fn advance(&mut self, n: usize) {
-            self.set_len(self.len() + n);
+        fn advance(&mut self, n: usize) {
+            unsafe { self.set_len(self.len() + n) };
         }
 
         fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
@@ -97,6 +98,11 @@ mod vec_integration {
                 .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))
         }
     }
+}
+
+unsafe fn slice_assume_init_mut_u8(slice: &mut [std::mem::MaybeUninit<u8>]) -> &mut [u8] {
+    // SAFETY: see `std::mem::MaybeUninit::slice_assume_init_mut`
+    &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8])
 }
 
 #[cfg(test)]

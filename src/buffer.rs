@@ -124,10 +124,8 @@ impl<W: io::Write> io::Write for DefaultBuffer<W> {
             ret
         } else {
             let n = buf.len().min(capacity);
-            // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
-            self.unfilled()[..n].copy_from_slice(unsafe { mem::transmute(&buf[..n]) });
-            // SAFETY: `n` elements have just been initialized by `copy_from_slice`
-            unsafe { self.advance(n) };
+            self.unfilled()[..n].copy_from_slice(&buf[..n]);
+            self.advance(n);
             Ok(n)
         }
     }
@@ -139,13 +137,14 @@ impl<W: io::Write> io::Write for DefaultBuffer<W> {
 }
 
 impl<W: io::Write> BufferedWrite for DefaultBuffer<W> {
-    fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>] {
-        self.buffer.spare_capacity_mut()
+    fn unfilled(&mut self) -> &mut [u8] {
+        // SAFETY: UB!
+        unsafe { super::slice_assume_init_mut_u8(self.buffer.spare_capacity_mut()) }
     }
 
-    unsafe fn advance(&mut self, n: usize) {
+    fn advance(&mut self, n: usize) {
         assert!(self.buffer.len() + n <= self.buffer.capacity());
-        self.buffer.set_len(self.buffer.len() + n);
+        unsafe { self.buffer.set_len(self.buffer.len() + n) };
     }
 
     fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
