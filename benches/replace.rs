@@ -52,7 +52,7 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
     }
     impl Drop for PanicGuard<'_> {
         fn drop(&mut self) {
-            unsafe { self.buf.set_len(self.len) };
+            self.buf.truncate(self.len);
         }
     }
 
@@ -69,7 +69,7 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
             loop {
                 if g.buf.capacity() - g.len < 32 {
                     g.buf.reserve(32);
-                    unsafe { g.buf.set_len(g.buf.capacity()) };
+                    g.buf.resize(g.buf.capacity(), 0);
                 }
 
                 let buf = &mut g.buf[g.len..];
