@@ -10,14 +10,18 @@ use super::writer::BufferedWrite;
 #[derive(Debug)]
 pub struct DefaultBuffer<W: io::Write> {
     buffer: Vec<u8>,
+    cursor: usize,
     panicked: bool,
     inner: W,
 }
 
 impl<W: io::Write> DefaultBuffer<W> {
     pub(crate) fn with_capacity(capacity: usize, inner: W) -> Self {
+        let mut buffer = vec![0; capacity];
+        buffer.resize(buffer.capacity(), 0);
         Self {
-            buffer: Vec::with_capacity(capacity),
+            buffer,
+            cursor: 0,
             panicked: false,
             inner,
         }
@@ -25,7 +29,7 @@ impl<W: io::Write> DefaultBuffer<W> {
 
     /// Returns a reference to the unwritten buffered data.
     pub fn buffer(&self) -> &[u8] {
-        &self.buffer
+        &self.buffer[..self.cursor]
     }
 
     /// Returns a reference to the underlying writer.
@@ -43,14 +47,16 @@ impl<W: io::Write> DefaultBuffer<W> {
     pub fn into_parts(self) -> (W, Result<Vec<u8>, WriterPanicked>) {
         // SAFETY: ok because all the fields are taken out of the scope while `ManuallyDrop`
         // guarantees that they are not double-dropped
-        let (buffer, panicked, inner) = unsafe {
+        let (mut buffer, cursor, panicked, inner) = unsafe {
             let m = mem::ManuallyDrop::new(self);
             (
                 ptr::read(&m.buffer),
+                ptr::read(&m.cursor),
                 ptr::read(&m.panicked),
                 ptr::read(&m.inner),
             )
         };
+        buffer.truncate(cursor);
         if !panicked {
             (inner, Ok(buffer))
         } else {
@@ -58,27 +64,34 @@ impl<W: io::Write> DefaultBuffer<W> {
         }
     }
 
+    fn is_empty(&self) -> bool {
+        self.cursor == 0
+    }
+
     /// Writes the buffered data into the underlying writer.
     pub(crate) fn flush_buffer(&mut self) -> io::Result<()> {
         // A guard struct to make sure to remove consumed bytes from the buffer when dropped.
         struct PanicGuard<'a> {
             consumed: usize,
-            buffer: &'a mut Vec<u8>,
+            buffer: &'a mut [u8],
+            cursor: &'a mut usize,
         }
 
         impl Drop for PanicGuard<'_> {
             fn drop(&mut self) {
                 if self.consumed < self.buffer.len() {
-                    self.buffer.drain(..self.consumed);
+                    self.buffer.copy_within(self.consumed.., 0);
+                    *self.cursor -= self.consumed;
                 } else {
-                    self.buffer.clear();
+                    *self.cursor = 0;
                 }
             }
         }
 
         let mut g = PanicGuard {
             consumed: 0,
-            buffer: &mut self.buffer,
+            buffer: &mut self.buffer[..self.cursor],
+            cursor: &mut self.cursor,
         };
 
         while g.consumed < g.buffer.len() {
@@ -116,7 +129,7 @@ impl<W: io::Write> io::Write for DefaultBuffer<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.try_reserve(1, Some(buf.len()))?;
         let capacity = self.unfilled().len();
-        if buf.len() > capacity && self.buffer.is_empty() {
+        if buf.len() > capacity && self.is_empty() {
             // bypass the internal buffer if the input buffer is large
             self.panicked = true;
             let ret = self.inner.write(buf);
@@ -138,21 +151,18 @@ impl<W: io::Write> io::Write for DefaultBuffer<W> {
 
 impl<W: io::Write> BufferedWrite for DefaultBuffer<W> {
     fn unfilled(&mut self) -> &mut [u8] {
-        // SAFETY: UB!
-        unsafe { super::slice_assume_init_mut_u8(self.buffer.spare_capacity_mut()) }
+        &mut self.buffer[self.cursor..]
     }
 
     fn advance(&mut self, n: usize) {
-        assert!(self.buffer.len() + n <= self.buffer.capacity());
-        unsafe { self.buffer.set_len(self.buffer.len() + n) };
+        assert!(self.cursor + n <= self.buffer.len());
+        self.cursor += n;
     }
 
     fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
-        if self.buffer.capacity() - self.buffer.len()
-            < size_hint.map_or(minimum, |n| n.max(minimum))
-        {
+        if self.unfilled().len() < size_hint.map_or(minimum, |n| n.max(minimum)) {
             self.flush_buffer()?;
-            if self.buffer.capacity() - self.buffer.len() < minimum {
+            if self.unfilled().len() < minimum {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "failed to reserve minimum buffer capacity",
