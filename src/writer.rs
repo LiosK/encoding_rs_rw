@@ -2,7 +2,8 @@ use std::{fmt, io, str};
 
 use encoding_rs::Encoder;
 
-use super::{buffer::DefaultBuffer, util, MalformedError, UnmappableError};
+use super::buffer::{DefaultBuffer, VecBuffer};
+use super::{util, MalformedError, UnmappableError};
 
 const MIN_BUF_SIZE: usize = 32;
 
@@ -141,6 +142,13 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
         } else {
             Err((writer, seq.into_iter()))
         }
+    }
+}
+
+impl EncodingWriter<VecBuffer> {
+    /// Creates a new encoding writer from a [`Vec<u8>`] and an encoder.
+    pub fn with_vec(vec: Vec<u8>, encoder: Encoder) -> Self {
+        Self::with_buffer(vec.into(), encoder)
     }
 }
 

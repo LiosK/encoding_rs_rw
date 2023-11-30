@@ -1,4 +1,4 @@
-use std::{error, fmt, io, mem, ptr};
+use std::{error, fmt, io, mem, ops, ptr};
 
 use super::writer::BufferedWrite;
 
@@ -127,7 +127,7 @@ impl<W: io::Write> Drop for DefaultBuffer<W> {
 
 impl<W: io::Write> io::Write for DefaultBuffer<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.try_reserve(1, Some(buf.len()))?;
+        self.try_reserve(buf.len().min(1), Some(buf.len()))?;
         let capacity = self.unfilled().len();
         if buf.len() > capacity && self.is_empty() {
             // bypass the internal buffer if the input buffer is large
@@ -195,3 +195,98 @@ impl fmt::Display for WriterPanicked {
 }
 
 impl error::Error for WriterPanicked {}
+
+/// A [`Vec<u8>`] wrapper that exposes the spare capacity through [`BufferedWrite`] trait as an
+/// initialized slice in a safe manner.
+#[derive(Debug)]
+pub struct VecBuffer {
+    buffer: Vec<u8>,
+    cursor: usize,
+}
+
+impl VecBuffer {
+    fn initialize_spare_capacity(&mut self) {
+        self.buffer.resize(self.buffer.capacity(), 0);
+    }
+}
+
+impl From<Vec<u8>> for VecBuffer {
+    fn from(buffer: Vec<u8>) -> Self {
+        let cursor = buffer.len();
+        let mut value = Self { buffer, cursor };
+        value.initialize_spare_capacity();
+        value
+    }
+}
+
+impl From<VecBuffer> for Vec<u8> {
+    fn from(mut value: VecBuffer) -> Self {
+        value.buffer.truncate(value.cursor);
+        value.buffer
+    }
+}
+
+impl io::Write for VecBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() > self.unfilled().len() {
+            self.buffer.truncate(self.cursor);
+            let ret = self.buffer.write(buf);
+            self.cursor = self.buffer.len();
+            self.initialize_spare_capacity();
+            ret
+        } else {
+            self.unfilled()[..buf.len()].copy_from_slice(buf);
+            self.advance(buf.len());
+            Ok(buf.len())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl BufferedWrite for VecBuffer {
+    fn unfilled(&mut self) -> &mut [u8] {
+        &mut self.buffer[self.cursor..]
+    }
+
+    fn advance(&mut self, n: usize) {
+        assert!(self.cursor + n <= self.buffer.len());
+        self.cursor += n;
+    }
+
+    fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
+        let size_hint = size_hint.unwrap_or(minimum);
+        if size_hint > minimum {
+            let capacity = self.unfilled().len();
+            if capacity < size_hint {
+                let _ = self.buffer.try_reserve(size_hint - capacity);
+                self.initialize_spare_capacity();
+            }
+        }
+
+        let capacity = self.unfilled().len();
+        if capacity < minimum {
+            self.buffer
+                .try_reserve(minimum - capacity)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))?;
+            self.initialize_spare_capacity();
+        }
+        Ok(())
+    }
+}
+
+impl ops::Deref for VecBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
+impl AsRef<[u8]> for VecBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.buffer[..self.cursor]
+    }
+}

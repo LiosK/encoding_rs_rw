@@ -70,7 +70,7 @@ fn writer_high_level_api() {
 #[test]
 fn unbuffered_writer_high_level_api() {
     for_each_test_case(|c| {
-        let writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+        let writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
         writer_high_level_api_impl(c, writer);
     });
 }
@@ -166,7 +166,7 @@ fn writer_byte_by_byte() {
 #[test]
 fn unbuffered_writer_byte_by_byte() {
     for_each_test_case(|c| {
-        let writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+        let writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
         writer_byte_by_byte_impl(c, writer);
     });
 }
@@ -459,7 +459,7 @@ fn unbuffered_writer_unmappable_char() {
         for c in cs {
             let actual = {
                 let mut src = c.decoded();
-                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
                 while !src.is_empty() {
                     match writer.write_str(src) {
                         Ok(0) => unreachable!(),
@@ -477,11 +477,11 @@ fn unbuffered_writer_unmappable_char() {
                 writer.flush().unwrap();
                 writer.finish().unwrap()
             };
-            assert_eq!(actual, c.encoded());
+            assert_eq!(actual.as_ref(), c.encoded());
 
             let actual_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
-                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
                 while !src.is_empty() {
                     match writer.write(&src[..1]) {
                         Ok(1) => src = &src[1..],
@@ -499,7 +499,7 @@ fn unbuffered_writer_unmappable_char() {
                 writer.flush().unwrap();
                 writer.finish().unwrap()
             };
-            assert_eq!(actual_byte_by_byte, c.encoded());
+            assert_eq!(actual_byte_by_byte.as_ref(), c.encoded());
         }
     });
 }
@@ -511,7 +511,7 @@ fn unbuffered_writer_unmappable_char_with_handler() {
         for c in cs {
             let actual_handler = {
                 let src = c.decoded();
-                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
                 {
                     let mut writer = writer
                         .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
@@ -520,11 +520,11 @@ fn unbuffered_writer_unmappable_char_with_handler() {
                 }
                 writer.finish().unwrap()
             };
-            assert_eq!(actual_handler, c.encoded());
+            assert_eq!(actual_handler.as_ref(), c.encoded());
 
             let actual_handler_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
-                let mut writer = EncodingWriter::with_buffer(Vec::new(), c.encoding.new_encoder());
+                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
                 {
                     let mut writer = writer
                         .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
@@ -538,7 +538,7 @@ fn unbuffered_writer_unmappable_char_with_handler() {
                 }
                 writer.finish().unwrap()
             };
-            assert_eq!(actual_handler_byte_by_byte, c.encoded());
+            assert_eq!(actual_handler_byte_by_byte.as_ref(), c.encoded());
         }
     });
 }
