@@ -2,7 +2,7 @@ use std::io::{self, prelude::*};
 
 use encoding_rs::{BIG5, EUC_JP, EUC_KR, ISO_2022_JP, ISO_8859_15, SHIFT_JIS};
 
-use crate::{misc, DecodingReader, EncodingWriter, MalformedError, UnmappableError};
+use crate::{DecodingReader, EncodingWriter, MalformedError, UnmappableError};
 
 /// Tests the reader's high level API usage.
 #[test]
@@ -60,31 +60,13 @@ where
 fn writer_high_level_api() {
     TEST_CASES.with(|cs| {
         for c in cs {
-            let writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
-            writer_high_level_api_impl(c, writer);
+            let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
+            write!(writer, "{}", c.decoded()).unwrap();
+            writer.flush().unwrap();
+            assert_eq!(writer.writer_ref(), c.encoded());
+            assert!(writer.finish().is_ok());
         }
     });
-}
-
-/// Tests the writer's high level API usage without buffering.
-#[test]
-fn unbuffered_writer_high_level_api() {
-    for_each_test_case(|c| {
-        let writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-        writer_high_level_api_impl(c, writer);
-    });
-}
-
-fn writer_high_level_api_impl<D, E, B>(c: &TestCase<D, E>, mut writer: EncodingWriter<B>)
-where
-    D: AsRef<str>,
-    E: AsRef<[u8]>,
-    B: AsRef<[u8]> + misc::BufferedWrite,
-{
-    write!(writer, "{}", c.decoded()).unwrap();
-    writer.flush().unwrap();
-    assert_eq!(writer.as_ref(), c.encoded());
-    assert!(writer.finish().is_ok());
 }
 
 /// Tests the reader for byte-by-byte streaming.
@@ -157,36 +139,18 @@ where
 #[test]
 fn writer_byte_by_byte() {
     for_each_test_case(|c| {
-        let writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
-        writer_byte_by_byte_impl(c, writer);
-    });
-}
-
-/// Tests the writer for byte-by-byte streaming without buffering.
-#[test]
-fn unbuffered_writer_byte_by_byte() {
-    for_each_test_case(|c| {
-        let writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-        writer_byte_by_byte_impl(c, writer);
-    });
-}
-
-fn writer_byte_by_byte_impl<D, E, B>(c: &TestCase<D, E>, mut writer: EncodingWriter<B>)
-where
-    D: AsRef<str>,
-    E: AsRef<[u8]>,
-    B: AsRef<[u8]> + misc::BufferedWrite,
-{
-    let mut src = c.decoded().as_bytes();
-    while !src.is_empty() {
-        match writer.write(&src[..1]) {
-            Ok(1) => src = &src[1..],
-            ret => panic!("assertion failed: {:?}", ret),
+        let mut writer = EncodingWriter::new(Vec::new(), c.encoding.new_encoder());
+        let mut src = c.decoded().as_bytes();
+        while !src.is_empty() {
+            match writer.write(&src[..1]) {
+                Ok(1) => src = &src[1..],
+                ret => panic!("assertion failed: {:?}", ret),
+            }
         }
-    }
-    writer.flush().unwrap();
-    assert_eq!(writer.as_ref(), c.encoded());
-    assert!(writer.finish().is_ok());
+        writer.flush().unwrap();
+        assert_eq!(writer.writer_ref(), c.encoded());
+        assert!(writer.finish().is_ok());
+    });
 }
 
 /// Emulates the replacement behavior of `encoding_rs::Decoder`.
@@ -446,97 +410,6 @@ fn writer_unmappable_char_with_handler() {
                     writer.flush().unwrap();
                 }
                 writer.unwrap_writer().unwrap()
-            };
-            assert_eq!(actual_handler_byte_by_byte, c.encoded());
-        }
-    });
-}
-
-/// Emulates the replacement behavior of `encoding_rs::Encoder`.
-#[test]
-fn unbuffered_writer_unmappable_char() {
-    TEST_CASES_UNMAPPABLE.with(|cs| {
-        for c in cs {
-            let actual = {
-                let mut src = c.decoded();
-                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-                while !src.is_empty() {
-                    match writer.write_str(src) {
-                        Ok(0) => unreachable!(),
-                        Ok(consumed) => src = &src[consumed..],
-                        Err(io_error) => {
-                            if let Some(e) = UnmappableError::wrapped_in(&io_error) {
-                                write!(writer.passthrough(), "&#{};", u32::from(e.value()))
-                                    .unwrap();
-                            } else {
-                                unreachable!();
-                            }
-                        }
-                    }
-                }
-                writer.flush().unwrap();
-                writer.unwrap_vec().unwrap()
-            };
-            assert_eq!(actual, c.encoded());
-
-            let actual_byte_by_byte = {
-                let mut src = c.decoded().as_bytes();
-                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-                while !src.is_empty() {
-                    match writer.write(&src[..1]) {
-                        Ok(1) => src = &src[1..],
-                        Ok(_) => unreachable!(),
-                        Err(io_error) => {
-                            if let Some(e) = UnmappableError::wrapped_in(&io_error) {
-                                write!(writer.passthrough(), "&#{};", u32::from(e.value()))
-                                    .unwrap();
-                            } else {
-                                unreachable!();
-                            }
-                        }
-                    }
-                }
-                writer.flush().unwrap();
-                writer.unwrap_vec().unwrap()
-            };
-            assert_eq!(actual_byte_by_byte, c.encoded());
-        }
-    });
-}
-
-/// Emulates the replacement behavior of `encoding_rs::Encoder`.
-#[test]
-fn unbuffered_writer_unmappable_char_with_handler() {
-    TEST_CASES_UNMAPPABLE.with(|cs| {
-        for c in cs {
-            let actual_handler = {
-                let src = c.decoded();
-                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-                {
-                    let mut writer = writer
-                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
-                    write!(writer, "{}", src).unwrap();
-                    writer.flush().unwrap();
-                }
-                writer.unwrap_vec().unwrap()
-            };
-            assert_eq!(actual_handler, c.encoded());
-
-            let actual_handler_byte_by_byte = {
-                let mut src = c.decoded().as_bytes();
-                let mut writer = EncodingWriter::with_vec(Vec::new(), c.encoding.new_encoder());
-                {
-                    let mut writer = writer
-                        .with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
-                    while !src.is_empty() {
-                        match writer.write(&src[..1]) {
-                            Ok(1) => src = &src[1..],
-                            _ => unreachable!(),
-                        }
-                    }
-                    writer.flush().unwrap();
-                }
-                writer.unwrap_vec().unwrap()
             };
             assert_eq!(actual_handler_byte_by_byte, c.encoded());
         }

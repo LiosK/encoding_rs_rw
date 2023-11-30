@@ -2,8 +2,7 @@ use std::{fmt, io, str};
 
 use encoding_rs::Encoder;
 
-use super::buffer::{DefaultBuffer, VecBuffer};
-use super::{util, MalformedError, UnmappableError};
+use super::{buffer::DefaultBuffer, util, MalformedError, UnmappableError};
 
 const MIN_BUF_SIZE: usize = 32;
 
@@ -102,7 +101,7 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
 
     /// Returns a reference to the underlying writer.
     pub fn writer_ref(&self) -> &W {
-        self.buffer.get_ref()
+        self.buffer_ref().get_ref()
     }
 
     /// Finishes the encoding writer and takes the underlying writer out of the structure.
@@ -141,33 +140,6 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
             Ok(writer)
         } else {
             Err((writer, seq.into_iter()))
-        }
-    }
-}
-
-impl EncodingWriter<VecBuffer> {
-    /// Creates a new encoding writer from a [`Vec<u8>`] and an encoder.
-    pub fn with_vec(vec: Vec<u8>, encoder: Encoder) -> Self {
-        Self::with_buffer(VecBuffer::from_inner(vec), encoder)
-    }
-
-    /// Finishes the encoding writer and takes the underlying [`Vec<u8>`] out of the structure.
-    ///
-    /// This method returns the error iterator returned by [`finish`](Self::finish) when it
-    /// encounters an error while finishing the encoding writer. See the documentation of `finish`
-    /// for details.
-    pub fn unwrap_vec(
-        self,
-    ) -> Result<
-        Vec<u8>,
-        (
-            Vec<u8>,
-            impl Iterator<Item = io::Result<Vec<u8>>> + fmt::Debug,
-        ),
-    > {
-        match self.finish() {
-            Ok(buffer) => Ok(buffer.into()),
-            Err((buffer, iter)) => Err((buffer.into(), iter)),
         }
     }
 }

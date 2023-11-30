@@ -124,22 +124,6 @@ fn writer_with_handler(b: &mut test::Bencher) {
 }
 
 #[bench]
-fn writer_with_handler_zero_copy(b: &mut test::Bencher) {
-    let src = test::black_box(TEXT);
-    let expected = encoder_expected(TEXT);
-    b.iter(|| {
-        let mut writer = EncodingWriter::with_vec(Vec::new(), Enc.new_encoder());
-        {
-            let mut writer = writer.with_unmappable_handler(|e, w| write_ncr(e.value(), w));
-            write!(writer, "{}", src).unwrap();
-            writer.flush().unwrap();
-        }
-
-        assert_eq!(writer.buffer_ref().as_ref(), &expected);
-    });
-}
-
-#[bench]
 fn writer_manual(b: &mut test::Bencher) {
     let src = test::black_box(TEXT);
     let expected = encoder_expected(TEXT);

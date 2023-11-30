@@ -71,7 +71,7 @@ pub use writer::EncodingWriter;
 
 /// Miscellaneous types not intended for direct access by name.
 pub mod misc {
-    pub use super::buffer::{DefaultBuffer, VecBuffer, WriterPanicked};
+    pub use super::buffer::{DefaultBuffer, WriterPanicked};
     pub use super::writer::{BufferedWrite, PassthroughWriter};
 }
 
