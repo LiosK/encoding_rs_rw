@@ -148,7 +148,7 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
 impl EncodingWriter<VecBuffer> {
     /// Creates a new encoding writer from a [`Vec<u8>`] and an encoder.
     pub fn with_vec(vec: Vec<u8>, encoder: Encoder) -> Self {
-        Self::with_buffer(vec.into(), encoder)
+        Self::with_buffer(VecBuffer::from_inner(vec), encoder)
     }
 }
 

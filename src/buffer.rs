@@ -205,17 +205,15 @@ pub struct VecBuffer {
 }
 
 impl VecBuffer {
-    fn initialize_spare_capacity(&mut self) {
-        self.buffer.resize(self.buffer.capacity(), 0);
-    }
-}
-
-impl From<Vec<u8>> for VecBuffer {
-    fn from(buffer: Vec<u8>) -> Self {
+    pub(crate) fn from_inner(buffer: Vec<u8>) -> Self {
         let cursor = buffer.len();
         let mut value = Self { buffer, cursor };
         value.initialize_spare_capacity();
         value
+    }
+
+    fn initialize_spare_capacity(&mut self) {
+        self.buffer.resize(self.buffer.capacity(), 0);
     }
 }
 
