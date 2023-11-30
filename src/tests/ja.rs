@@ -475,9 +475,9 @@ fn unbuffered_writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                writer.finish().unwrap()
+                writer.unwrap_vec().unwrap()
             };
-            assert_eq!(actual.as_ref(), c.encoded());
+            assert_eq!(actual, c.encoded());
 
             let actual_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
@@ -497,9 +497,9 @@ fn unbuffered_writer_unmappable_char() {
                     }
                 }
                 writer.flush().unwrap();
-                writer.finish().unwrap()
+                writer.unwrap_vec().unwrap()
             };
-            assert_eq!(actual_byte_by_byte.as_ref(), c.encoded());
+            assert_eq!(actual_byte_by_byte, c.encoded());
         }
     });
 }
@@ -518,9 +518,9 @@ fn unbuffered_writer_unmappable_char_with_handler() {
                     write!(writer, "{}", src).unwrap();
                     writer.flush().unwrap();
                 }
-                writer.finish().unwrap()
+                writer.unwrap_vec().unwrap()
             };
-            assert_eq!(actual_handler.as_ref(), c.encoded());
+            assert_eq!(actual_handler, c.encoded());
 
             let actual_handler_byte_by_byte = {
                 let mut src = c.decoded().as_bytes();
@@ -536,9 +536,9 @@ fn unbuffered_writer_unmappable_char_with_handler() {
                     }
                     writer.flush().unwrap();
                 }
-                writer.finish().unwrap()
+                writer.unwrap_vec().unwrap()
             };
-            assert_eq!(actual_handler_byte_by_byte.as_ref(), c.encoded());
+            assert_eq!(actual_handler_byte_by_byte, c.encoded());
         }
     });
 }

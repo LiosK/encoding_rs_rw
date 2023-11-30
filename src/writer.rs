@@ -150,6 +150,26 @@ impl EncodingWriter<VecBuffer> {
     pub fn with_vec(vec: Vec<u8>, encoder: Encoder) -> Self {
         Self::with_buffer(VecBuffer::from_inner(vec), encoder)
     }
+
+    /// Finishes the encoding writer and takes the underlying [`Vec<u8>`] out of the structure.
+    ///
+    /// This method returns the error iterator returned by [`finish`](Self::finish) when it
+    /// encounters an error while finishing the encoding writer. See the documentation of `finish`
+    /// for details.
+    pub fn unwrap_vec(
+        self,
+    ) -> Result<
+        Vec<u8>,
+        (
+            Vec<u8>,
+            impl Iterator<Item = io::Result<Vec<u8>>> + fmt::Debug,
+        ),
+    > {
+        match self.finish() {
+            Ok(buffer) => Ok(buffer.into()),
+            Err((buffer, iter)) => Err((buffer.into(), iter)),
+        }
+    }
 }
 
 impl<B: BufferedWrite> EncodingWriter<B> {
