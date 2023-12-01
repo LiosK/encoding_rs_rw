@@ -24,7 +24,7 @@ impl MiniBuffer {
         self.len.into()
     }
 
-    pub fn add_len(&mut self, n: usize) {
+    pub fn advance(&mut self, n: usize) {
         debug_assert!(self.len() + n <= self.buf.len());
         self.len = self.buf.len().min(self.len() + n) as u8;
     }
@@ -39,11 +39,7 @@ impl MiniBuffer {
         };
     }
 
-    pub fn spare_capacity_len(&self) -> usize {
-        self.buf.len() - self.len()
-    }
-
-    pub fn spare_capacity_mut(&mut self) -> &mut [u8] {
+    pub fn unfilled(&mut self) -> &mut [u8] {
         &mut self.buf[self.len.into()..]
     }
 
@@ -58,10 +54,10 @@ impl MiniBuffer {
 
     /// Writes as many bytes as possible pulled from a reader into the spare capacity.
     pub fn fill_from_reader(&mut self, reader: &mut impl io::Read) -> io::Result<()> {
-        while self.spare_capacity_len() > 0 {
-            match reader.read(self.spare_capacity_mut()) {
+        while !self.unfilled().is_empty() {
+            match reader.read(self.unfilled()) {
                 Ok(0) => break,
-                Ok(n) => self.add_len(n),
+                Ok(n) => self.advance(n),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e),
             }
@@ -72,9 +68,9 @@ impl MiniBuffer {
     /// Writes as many bytes as possible copied from a slice into the spare capacity, returning the
     /// number of bytes consumed.
     pub fn fill_from_slice(&mut self, buf: &[u8]) -> usize {
-        let n = self.spare_capacity_len().min(buf.len());
-        self.spare_capacity_mut()[..n].copy_from_slice(&buf[..n]);
-        self.add_len(n);
+        let n = self.unfilled().len().min(buf.len());
+        self.unfilled()[..n].copy_from_slice(&buf[..n]);
+        self.advance(n);
         n
     }
 }

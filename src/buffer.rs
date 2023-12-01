@@ -62,10 +62,6 @@ impl<W: io::Write> DefaultBuffer<W> {
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.cursor == 0
-    }
-
     /// Writes the buffered data into the underlying writer.
     pub(crate) fn flush_buffer(&mut self) -> io::Result<()> {
         // A guard struct to make sure to remove consumed bytes from the buffer when dropped.
@@ -127,7 +123,7 @@ impl<W: io::Write> io::Write for DefaultBuffer<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.try_reserve(buf.len().min(1), Some(buf.len()))?;
         let capacity = self.unfilled().len();
-        if buf.len() > capacity && self.is_empty() {
+        if buf.len() > capacity && self.buffer().is_empty() {
             // bypass the internal buffer if the input buffer is large
             self.panicked = true;
             let ret = self.inner.write(buf);
