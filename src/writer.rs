@@ -1,4 +1,4 @@
-use std::{fmt, io, mem, str};
+use std::{fmt, io, str};
 
 use encoding_rs::Encoder;
 
@@ -101,7 +101,7 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
 
     /// Returns a reference to the underlying writer.
     pub fn writer_ref(&self) -> &W {
-        self.buffer.get_ref()
+        self.buffer_ref().get_ref()
     }
 
     /// Finishes the encoding writer and takes the underlying writer out of the structure.
@@ -185,25 +185,28 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             seq.push(Err(e));
         }
 
-        let mut dst = vec![0; max_remainder_len];
-        let (result, _consumed, written) = self
-            .encoder
-            .encode_from_utf8_without_replacement("", &mut dst, true);
-        if written > 0 {
+        let result = if seq.is_empty() {
+            let unfilled = self.buffer.unfilled();
+            assert!(
+                unfilled.len() >= max_remainder_len,
+                "illegal `BufferedWrite` implementation"
+            );
+            let (result, _consumed, written) = self
+                .encoder
+                .encode_from_utf8_without_replacement("", unfilled, true);
+            self.buffer.advance(written);
+            result
+        } else {
+            let mut dst = vec![0; max_remainder_len];
+            let (result, _consumed, written) = self
+                .encoder
+                .encode_from_utf8_without_replacement("", &mut dst, true);
             dst.truncate(written);
-            if seq.is_empty() {
-                // SAFETY: `&[T]` and `&[MaybeUninit<T>]` have the same layout
-                self.buffer
-                    .unfilled()
-                    .get_mut(..dst.len())
-                    .expect("illegal `BufferedWrite` implementation")
-                    .copy_from_slice(unsafe { mem::transmute(dst.as_slice()) });
-                // SAFETY: `dst.len()` elements have just been initialized by `copy_from_slice`
-                unsafe { self.buffer.advance(dst.len()) };
-            } else {
+            if !dst.is_empty() {
                 seq.push(Ok(dst));
             }
-        }
+            result
+        };
 
         if let encoding_rs::EncoderResult::Unmappable(c) = result {
             seq.push(Err(UnmappableError::new(c).wrap()));
@@ -373,19 +376,10 @@ impl<B: BufferedWrite> EncodingWriter<B> {
             unfilled.len() >= MIN_BUF_SIZE,
             "illegal `BufferedWrite` implementation"
         );
-        // SAFETY: The following code should be okay because it mimics the approach taken by
-        // `encoding_rs` to implement the `encode_from_utf8_to_vec_*` methods; however, it is
-        // definitely (but controversially) UB to create a mutable reference to an uninitialized
-        // byte buffer and pass it to a supposedly write-only function. See also:
-        //
-        // - https://github.com/hsivonen/encoding_rs/issues/79
-        // - https://github.com/rust-lang/unsafe-code-guidelines/issues/71
-        let (result, consumed, written) = self.encoder.encode_from_utf8_without_replacement(
-            buf,
-            unsafe { slice_assume_init_mut_u8(unfilled) },
-            false,
-        );
-        unsafe { self.buffer.advance(written) };
+        let (result, consumed, written) = self
+            .encoder
+            .encode_from_utf8_without_replacement(buf, unfilled, false);
+        self.buffer.advance(written);
         debug_assert_ne!(consumed, 0);
         debug_assert!(buf.is_char_boundary(consumed), "encoder broke contract");
 
@@ -543,11 +537,6 @@ fn str_from_utf8_up_to_error(v: &[u8]) -> Result<&str, Option<usize>> {
     }
 }
 
-unsafe fn slice_assume_init_mut_u8(slice: &mut [mem::MaybeUninit<u8>]) -> &mut [u8] {
-    // SAFETY: see `std::mem::MaybeUninit::slice_assume_init_mut`
-    &mut *(slice as *mut [mem::MaybeUninit<u8>] as *mut [u8])
-}
-
 trait WriteFmtAdapter {
     /// Writes a string slice just like [`std::fmt::Write::write_str`] but returns a result just
     /// like [`std::io::Write::write`].
@@ -619,19 +608,15 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
 pub trait BufferedWrite: io::Write {
     /// Returns the unfilled buffer capacity as a slice.
     ///
-    /// The caller must [`advance`](Self::advance) the cursor after writing initialized data into
-    /// the returned buffer.
-    fn unfilled(&mut self) -> &mut [mem::MaybeUninit<u8>];
+    /// The caller must [`advance`](Self::advance) the cursor after writing data into the returned
+    /// buffer.
+    fn unfilled(&mut self) -> &mut [u8];
 
     /// Marks the first `n` bytes of the unfilled buffer as filled.
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure:
-    ///
-    /// -  `n` is less than or equal to the length of the unfilled buffer.
-    /// -  The first `n` bytes of the unfilled buffer is properly initialized.
-    unsafe fn advance(&mut self, n: usize);
+    /// If `n` is greater than the length of the unfilled buffer, the implementation may panic
+    /// immediately or later when another operation is requested.
+    fn advance(&mut self, n: usize);
 
     /// Tries to reserve capacity for at least `minimum` more bytes.
     ///

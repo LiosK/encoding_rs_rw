@@ -376,12 +376,12 @@ fn decode_with_fallback_buf<T>(
     mut decode: impl FnMut(&mut [u8]) -> (T, usize, usize),
 ) -> (T, usize, usize) {
     debug_assert!(fallback_buf.is_empty());
-    if dst_buf.len() > fallback_buf.spare_capacity_len() {
+    if dst_buf.len() > fallback_buf.unfilled().len() {
         decode(dst_buf)
     } else {
-        let (result, consumed, mut written) = decode(fallback_buf.spare_capacity_mut());
+        let (result, consumed, mut written) = decode(fallback_buf.unfilled());
         if written > 0 {
-            fallback_buf.add_len(written);
+            fallback_buf.advance(written);
             written = fallback_buf.read_to_slice(dst_buf);
         }
         (result, consumed, written)
@@ -414,7 +414,7 @@ fn read_to_string_impl(
 
     impl Drop for PanicGuard<'_> {
         fn drop(&mut self) {
-            unsafe { self.inner.set_len(self.len) };
+            self.inner.truncate(self.len);
         }
     }
 
@@ -481,7 +481,7 @@ impl<R: io::BufRead> BufReadWithFallbackBuffer<R> {
 
         {
             let buf = self.inner.fill_buf()?;
-            if buf.is_empty() || buf.len() > self.fallback_buf.spare_capacity_len() {
+            if buf.is_empty() || buf.len() > self.fallback_buf.unfilled().len() {
                 // Intends to `return Ok(buf);` but hacks the borrow checker to work around the
                 // "conditional returns" limitation: https://github.com/rust-lang/rust/issues/51545
                 return Ok(unsafe { slice::from_raw_parts(buf.as_ptr(), buf.len()) });

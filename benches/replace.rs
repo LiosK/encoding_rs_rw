@@ -1,6 +1,7 @@
 //! Compares the throughput of replacing malformed bytes and unmappable characters.
 
 #![feature(test)]
+#![feature(maybe_uninit_slice)]
 
 extern crate test;
 
@@ -52,7 +53,7 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
     }
     impl Drop for PanicGuard<'_> {
         fn drop(&mut self) {
-            unsafe { self.buf.set_len(self.len) };
+            self.buf.truncate(self.len);
         }
     }
 
@@ -69,7 +70,7 @@ fn reader_manual_optimized(b: &mut test::Bencher) {
             loop {
                 if g.buf.capacity() - g.len < 32 {
                     g.buf.reserve(32);
-                    unsafe { g.buf.set_len(g.buf.capacity()) };
+                    g.buf.resize(g.buf.capacity(), 0);
                 }
 
                 let buf = &mut g.buf[g.len..];
@@ -123,19 +124,48 @@ fn writer_with_handler(b: &mut test::Bencher) {
     });
 }
 
+/// Writes directly into the spare capacity of a `Vec<u8>` in an UB manner.
 #[bench]
-fn writer_with_handler_zero_copy(b: &mut test::Bencher) {
+fn writer_with_handler_zero_copy_ub(b: &mut test::Bencher) {
+    struct UBBuffer(Vec<u8>);
+    impl io::Write for UBBuffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.write(buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+    }
+    impl encoding_rs_rw::misc::BufferedWrite for UBBuffer {
+        fn unfilled(&mut self) -> &mut [u8] {
+            // SAFETY: UB! `assume_init` an uninitialized buffer is UB even if T is `u8`
+            unsafe { std::mem::MaybeUninit::slice_assume_init_mut(self.0.spare_capacity_mut()) }
+        }
+        fn advance(&mut self, n: usize) {
+            unsafe { self.0.set_len(self.0.len() + n) };
+        }
+        fn try_reserve(&mut self, minimum: usize, size_hint: Option<usize>) -> io::Result<()> {
+            let size_hint = size_hint.unwrap_or(minimum);
+            if size_hint > minimum && self.0.try_reserve(size_hint).is_ok() {
+                return Ok(());
+            }
+            self.0
+                .try_reserve(minimum)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))
+        }
+    }
+
     let src = test::black_box(TEXT);
     let expected = encoder_expected(TEXT);
     b.iter(|| {
-        let mut writer = EncodingWriter::with_buffer(Vec::new(), Enc.new_encoder());
+        let mut writer = EncodingWriter::with_buffer(UBBuffer(Vec::new()), Enc.new_encoder());
         {
             let mut writer = writer.with_unmappable_handler(|e, w| write_ncr(e.value(), w));
             write!(writer, "{}", src).unwrap();
             writer.flush().unwrap();
         }
 
-        assert_eq!(writer.buffer_ref(), &expected);
+        assert_eq!(&writer.buffer_ref().0, &expected);
     });
 }
 
