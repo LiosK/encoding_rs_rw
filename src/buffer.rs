@@ -9,7 +9,7 @@ use super::writer::BufferedWrite;
 /// them into the underlying writer when dropped or when the buffer becomes full.
 #[derive(Debug)]
 pub struct DefaultBuffer<W: io::Write> {
-    buffer: Vec<u8>,
+    buffer: Box<[u8]>,
     cursor: usize,
     panicked: bool,
     inner: W,
@@ -18,7 +18,7 @@ pub struct DefaultBuffer<W: io::Write> {
 impl<W: io::Write> DefaultBuffer<W> {
     pub(crate) fn with_capacity(capacity: usize, inner: W) -> Self {
         Self {
-            buffer: vec![0; capacity],
+            buffer: vec![0; capacity].into(),
             cursor: 0,
             panicked: false,
             inner,
@@ -48,7 +48,7 @@ impl<W: io::Write> DefaultBuffer<W> {
         let (mut buffer, cursor, panicked, inner) = unsafe {
             let m = mem::ManuallyDrop::new(self);
             (
-                ptr::read(&m.buffer),
+                Vec::<u8>::from(ptr::read(&m.buffer)),
                 ptr::read(&m.cursor),
                 ptr::read(&m.panicked),
                 ptr::read(&m.inner),
@@ -122,16 +122,14 @@ impl<W: io::Write> Drop for DefaultBuffer<W> {
 impl<W: io::Write> io::Write for DefaultBuffer<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.try_reserve(buf.len().min(1), Some(buf.len()))?;
-        let capacity = self.unfilled().len();
-        if buf.len() > capacity && self.buffer().is_empty() {
+        if buf.len() > self.unfilled().len() && self.buffer().is_empty() {
             // bypass the internal buffer if the input buffer is large
             self.panicked = true;
             let ret = self.inner.write(buf);
             self.panicked = false;
             ret
         } else {
-            let n = buf.len().min(capacity);
-            self.unfilled()[..n].copy_from_slice(&buf[..n]);
+            let n = self.unfilled().write(buf)?;
             self.advance(n);
             Ok(n)
         }

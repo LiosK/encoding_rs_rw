@@ -20,6 +20,8 @@ const MIN_BUF_SIZE: usize = 32;
 /// UTF-8 bytes. These errors are non-fatal, and the writer can continue to encode the subsequent
 /// bytes by calling any writer methods. See the documentation of [`UnmappableError`] for how to
 /// resume while replacing the unmappable characters with the HTML numeric character references.
+/// See also [`with_unmappable_handler`] for a variant of this writer that handles
+/// `UnmappableError`s with a closure.
 ///
 /// To meet the requirements of [`std::io::Write`], this writer often _defers_ an error from one
 /// write call to the next. A call to `write` consumes an unmappable character and returns `Ok(n)`,
@@ -38,6 +40,7 @@ const MIN_BUF_SIZE: usize = 32;
 /// error explicitly.
 ///
 /// [`BufWriter`]: io::BufWriter
+/// [`with_unmappable_handler`]: Self::with_unmappable_handler
 /// [`write_str`]: Self::write_str
 /// [`passthrough`]: Self::passthrough
 /// [`write_all`]: io::Write::write_all
@@ -610,9 +613,18 @@ pub trait BufferedWrite: io::Write {
     ///
     /// The caller must [`advance`](Self::advance) the cursor after writing data into the returned
     /// buffer.
+    ///
+    /// The implementation must initialize the buffer in the memory management sense but may fill
+    /// any `u8` values in it. Accordingly, the caller must not assume anything about the content
+    /// of the returned buffer.
     fn unfilled(&mut self) -> &mut [u8];
 
     /// Marks the first `n` bytes of the unfilled buffer as filled.
+    ///
+    /// The caller must ensure that the first `n` bytes of the unfilled buffer have been filled
+    /// with logically valid values. Although this method is not marked as unsafe (because this
+    /// trait does not involve uninitialized memory), the buffer content would be logically
+    /// undefined if the caller broke this contract.
     ///
     /// If `n` is greater than the length of the unfilled buffer, the implementation may panic
     /// immediately or later when another operation is requested.
