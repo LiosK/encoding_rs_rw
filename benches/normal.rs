@@ -1,4 +1,4 @@
-//! Compares the throughput of replacing malformed bytes and unmappable characters.
+//! Compares the throughput of EncodingWriter in normal use cases.
 
 #![feature(test)]
 #![feature(maybe_uninit_slice)]
@@ -7,104 +7,8 @@ extern crate test;
 
 use std::{io, io::prelude::*, mem};
 
-use encoding_rs::{ISO_8859_15 as Enc, UTF_8};
+use encoding_rs::SHIFT_JIS as Enc;
 use encoding_rs_rw::*;
-
-const N_READ: usize = 32 * 1024;
-
-#[bench]
-fn reader_lossy(b: &mut test::Bencher) {
-    let src = test::black_box(vec![0xffu8; N_READ]);
-    let expected = "�".repeat(N_READ);
-    b.iter(|| {
-        let mut dst = String::new();
-        let mut reader = DecodingReader::new(&src[..], UTF_8.new_decoder());
-        reader.lossy().read_to_string(&mut dst).unwrap();
-
-        assert_eq!(dst, expected);
-    });
-}
-
-#[bench]
-fn reader_manual_naive(b: &mut test::Bencher) {
-    let src = test::black_box(vec![0xffu8; N_READ]);
-    let expected = "�".repeat(N_READ);
-    b.iter(|| {
-        let mut dst = String::new();
-        let mut reader = DecodingReader::new(&src[..], UTF_8.new_decoder());
-        loop {
-            match reader.read_to_string(&mut dst) {
-                Ok(_) => break,
-                Err(e) if MalformedError::wrapped_in(&e).is_some() => dst.push('�'),
-                Err(_) => unreachable!(),
-            }
-        }
-
-        assert_eq!(dst, expected);
-    });
-}
-
-/// Manages the buffer manually because repeatedly calling `read_to_string` seems inefficient.
-#[bench]
-fn reader_manual_optimized(b: &mut test::Bencher) {
-    struct PanicGuard<'a> {
-        len: usize,
-        buf: &'a mut Vec<u8>,
-    }
-    impl Drop for PanicGuard<'_> {
-        fn drop(&mut self) {
-            self.buf.truncate(self.len);
-        }
-    }
-
-    let src = test::black_box(vec![0xffu8; N_READ]);
-    let expected = "�".repeat(N_READ);
-    b.iter(|| {
-        let mut dst = String::new();
-        let mut reader = DecodingReader::new(&src[..], UTF_8.new_decoder());
-        {
-            let mut g = PanicGuard {
-                len: dst.len(),
-                buf: unsafe { dst.as_mut_vec() },
-            };
-            loop {
-                if g.buf.capacity() - g.len < 32 {
-                    g.buf.reserve(32);
-                    g.buf.resize(g.buf.capacity(), 0);
-                }
-
-                let buf = &mut g.buf[g.len..];
-                match reader.read(buf) {
-                    Ok(0) => break,
-                    Ok(n) => g.len += n,
-                    Err(e) if MalformedError::wrapped_in(&e).is_some() => {
-                        buf[.."�".len()].copy_from_slice("�".as_bytes());
-                        g.len += "�".len();
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(_) => unreachable!(),
-                }
-            }
-        }
-
-        assert_eq!(dst, expected);
-    });
-}
-
-#[bench]
-fn raw_decoder(b: &mut test::Bencher) {
-    let src = test::black_box(vec![0xffu8; N_READ]);
-    let expected = "�".repeat(N_READ);
-    b.iter(|| {
-        let mut dst = String::new();
-        let mut decoder = UTF_8.new_decoder();
-        dst.reserve(decoder.max_utf8_buffer_length(src.len()).unwrap());
-        let (result, _, _) = decoder.decode_to_string(&src, &mut dst, true);
-        assert!(matches!(result, encoding_rs::CoderResult::InputEmpty));
-
-        assert_eq!(dst, expected);
-    });
-}
 
 const TEXT: &str = include_str!("text_ja.txt");
 
