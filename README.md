@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/encoding_rs_rw)](https://crates.io/crates/encoding_rs_rw)
 [![License](https://img.shields.io/crates/l/encoding_rs_rw)](https://github.com/LiosK/encoding_rs_rw/blob/main/LICENSE)
 
-std::io::{Read, Write} wrappers for encoding_rs
+Space-efficient std::io::{Read, Write} wrappers for encoding_rs
 
 This crate provides `std::io::Read` and `std::io::Write` implementations for
 `encoding_rs::Decoder` and `encoding_rs::Encoder`, respectively, to support
@@ -56,6 +56,17 @@ let mut writer = EncodingWriter::new(file_w, ISO_8859_7.new_encoder());
 ```
 
 [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
+
+## Design
+
+Conversion between different character encodings essentially requires byte
+buffers before and after the converter to implement Rust's `Read` and `Write`
+traits because, whereas `read` and `write` must support byte-by-byte operations,
+character encoders and decoders consume and produce multiple bytes at a time to
+handle multi-byte characters. The types in this crate employ small buffers to
+operate byte-by-byte, but it bypasses the internal buffers and utilizes the
+supplied buffers as much as possible to minimize double-buffering and memory
+consumption.
 
 ## License
 

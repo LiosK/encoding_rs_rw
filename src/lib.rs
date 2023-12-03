@@ -1,4 +1,4 @@
-//! std::io::{Read, Write} wrappers for encoding_rs
+//! Space-efficient std::io::{Read, Write} wrappers for encoding_rs
 //!
 //! This crate provides [`std::io::Read`] and [`std::io::Write`] implementations for
 //! [`encoding_rs::Decoder`] and [`encoding_rs::Encoder`], respectively, to support
@@ -55,6 +55,17 @@
 //! [`encoding_rs_io`]: https://crates.io/crates/encoding_rs_io
 //! [`lossy`]: DecodingReader::lossy
 //! [`with_unmappable_handler`]: EncodingWriter::with_unmappable_handler
+//!
+//! ## Design
+//!
+//! Conversion between different character encodings essentially requires byte
+//! buffers before and after the converter to implement Rust's `Read` and `Write`
+//! traits because, whereas `read` and `write` must support byte-by-byte operations,
+//! character encoders and decoders consume and produce multiple bytes at a time to
+//! handle multi-byte characters. The types in this crate employ small buffers to
+//! operate byte-by-byte, but it bypasses the internal buffers and utilizes the
+//! supplied buffers as much as possible to minimize double-buffering and memory
+//! consumption.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
