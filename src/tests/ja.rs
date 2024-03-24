@@ -358,7 +358,9 @@ fn writer_unmappable_char() {
                 while !src.is_empty() {
                     match writer.write(&src[..1]) {
                         Ok(1) => src = &src[1..],
-                        Ok(_) => unreachable!(),
+                        Ok(consumed) => {
+                            unreachable!("consumed {} bytes out of one-byte slice", consumed)
+                        }
                         Err(io_error) => {
                             if let Some(e) = UnmappableError::wrapped_in(&io_error) {
                                 write!(writer.passthrough(), "&#{};", u32::from(e.value()))
