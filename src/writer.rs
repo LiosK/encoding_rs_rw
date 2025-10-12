@@ -276,7 +276,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     /// assert_eq!(writer.writer_ref(), br"\U0001F602");
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn passthrough(&mut self) -> PassthroughWriter<B> {
+    pub fn passthrough(&mut self) -> PassthroughWriter<'_, B> {
         PassthroughWriter(self)
     }
 
@@ -319,7 +319,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     pub fn with_unmappable_handler<'a>(
         &'a mut self,
         handler: impl FnMut(UnmappableError, &mut PassthroughWriter<B>) -> io::Result<()> + 'a,
-    ) -> impl io::Write + '_ {
+    ) -> impl io::Write + 'a {
         struct WithUnmappableHandlerWriter<'a, B, H>(&'a mut EncodingWriter<B>, H);
 
         impl<B: BufferedWrite, H> WithUnmappableHandlerWriter<'_, B, H>
