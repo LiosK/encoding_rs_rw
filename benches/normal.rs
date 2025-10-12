@@ -5,7 +5,7 @@
 
 extern crate test;
 
-use std::{io, io::prelude::*, mem};
+use std::{io, io::prelude::*};
 
 use encoding_rs::SHIFT_JIS as Enc;
 use encoding_rs_rw::*;
@@ -43,7 +43,7 @@ fn writer_with_handler_zero_copy_ub(b: &mut test::Bencher) {
     impl misc::BufferedWrite for UBBuffer {
         fn unfilled(&mut self) -> &mut [u8] {
             // SAFETY: UB! `assume_init` an uninitialized buffer is UB even if T is `u8`
-            unsafe { mem::MaybeUninit::slice_assume_init_mut(self.0.spare_capacity_mut()) }
+            unsafe { self.0.spare_capacity_mut().assume_init_mut() }
         }
         fn advance(&mut self, n: usize) {
             unsafe { self.0.set_len(self.0.len() + n) };
