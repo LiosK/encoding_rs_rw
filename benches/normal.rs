@@ -1,7 +1,6 @@
 //! Compares the throughput of EncodingWriter in normal use cases.
 
 #![feature(test)]
-#![feature(maybe_uninit_slice)]
 
 extern crate test;
 
