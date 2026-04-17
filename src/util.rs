@@ -1,6 +1,4 @@
-use std::{fmt, io, ops};
-
-use encoding_rs::{Decoder, Encoder};
+use std::io;
 
 /// A `Vec`-like struct that handles a tiny stack-allocated byte array.
 #[derive(Debug, Default)]
@@ -74,41 +72,3 @@ impl MiniBuffer {
         n
     }
 }
-
-/// Implements `Debug` for `encoding_rs::Decoder` and `encoding_rs::Encoder`.
-macro_rules! define_debuggable_coder {
-    ($type_name:ident, $inner_type:ident) => {
-        pub struct $type_name($inner_type);
-
-        impl fmt::Debug for $type_name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_struct(stringify!($inner_type))
-                    .field("encoding()", self.encoding())
-                    .finish()
-            }
-        }
-
-        impl From<$inner_type> for $type_name {
-            fn from(value: $inner_type) -> Self {
-                Self(value)
-            }
-        }
-
-        impl ops::Deref for $type_name {
-            type Target = $inner_type;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl ops::DerefMut for $type_name {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-    };
-}
-
-define_debuggable_coder!(DebuggableDecoder, Decoder);
-define_debuggable_coder!(DebuggableEncoder, Encoder);

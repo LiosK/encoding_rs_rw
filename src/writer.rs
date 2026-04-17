@@ -68,10 +68,9 @@ const MIN_BUF_SIZE: usize = 32;
 /// );
 /// # Ok::<(), std::io::Error>(())
 /// ```
-#[derive(Debug)]
 pub struct EncodingWriter<B> {
     buffer: B,
-    encoder: util::DebuggableEncoder,
+    encoder: Encoder,
     /// Storage to carry an error from one write call to the next, used to tentatively return `Ok`
     /// (as per the contract) after consuming erroneous input and report the error at the beginning
     /// of the subsequent call.
@@ -152,7 +151,7 @@ impl<B: BufferedWrite> EncodingWriter<B> {
     pub fn with_buffer(buffer: B, encoder: Encoder) -> Self {
         Self {
             buffer,
-            encoder: encoder.into(),
+            encoder,
             deferred_error: None,
         }
     }
@@ -493,6 +492,24 @@ impl<B: BufferedWrite> io::Write for EncodingWriter<B> {
     fn write_fmt(&mut self, f: fmt::Arguments<'_>) -> io::Result<()> {
         self.realize_deferred_error_except_incomplete_utf8()?;
         write_fmt_impl(self, f)
+    }
+}
+
+impl<B: fmt::Debug> fmt::Debug for EncodingWriter<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        struct Wrapper<'a>(&'a Encoder);
+        impl fmt::Debug for Wrapper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+                f.debug_struct("Encoder")
+                    .field("encoding()", self.0.encoding())
+                    .finish_non_exhaustive()
+            }
+        }
+        f.debug_struct("EncodingWriter")
+            .field("buffer", &self.buffer)
+            .field("encoder", &Wrapper(&self.encoder))
+            .field("deferred_error", &self.deferred_error)
+            .finish()
     }
 }
 

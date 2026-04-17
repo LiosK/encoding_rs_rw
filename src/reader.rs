@@ -1,4 +1,4 @@
-use std::{io, slice, str};
+use std::{fmt, io, slice, str};
 
 use encoding_rs::Decoder;
 
@@ -46,10 +46,9 @@ use super::{util, MalformedError};
 /// assert_eq!(dst, "😂👻");
 /// # Ok::<(), std::io::Error>(())
 /// ```
-#[derive(Debug)]
 pub struct DecodingReader<R> {
     reader: BufReadWithFallbackBuffer<R>,
-    decoder: Option<util::DebuggableDecoder>,
+    decoder: Option<Decoder>,
     /// A tiny backup buffer used when the buffer supplied by the caller is so small that the
     /// decoder might be unable to write a single UTF-8 character.
     fallback_buf: util::MiniBuffer,
@@ -64,7 +63,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     pub fn new(reader: R, decoder: Decoder) -> Self {
         Self {
             reader: reader.into(),
-            decoder: Some(decoder.into()),
+            decoder: Some(decoder),
             fallback_buf: Default::default(),
             deferred_error: None,
         }
@@ -77,7 +76,7 @@ impl<R: io::BufRead> DecodingReader<R> {
 
     /// Returns a reference to the underlying decoder if it is still active or `None` otherwise.
     pub fn decoder_ref(&self) -> Option<&Decoder> {
-        self.decoder.as_deref()
+        self.decoder.as_ref()
     }
 
     /// Takes the underlying reader out of the structure.
@@ -238,7 +237,7 @@ impl<R: io::BufRead> DecodingReader<R> {
             };
         }
 
-        let decoder = self.decoder.as_deref_mut().unwrap();
+        let decoder = self.decoder.as_mut().unwrap();
         let written = if !LOSSY {
             let (result, consumed, written) =
                 decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
@@ -338,6 +337,25 @@ impl<R: io::BufRead> io::Read for DecodingReader<R> {
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         read_to_string_impl(self, buf)
+    }
+}
+
+impl<R: fmt::Debug> fmt::Debug for DecodingReader<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        struct Wrapper<'a>(&'a Decoder);
+        impl fmt::Debug for Wrapper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+                f.debug_struct("Decoder")
+                    .field("encoding()", self.0.encoding())
+                    .finish_non_exhaustive()
+            }
+        }
+        f.debug_struct("DecodingReader")
+            .field("reader", &self.reader)
+            .field("decoder", &self.decoder.as_ref().map(Wrapper))
+            .field("fallback_buf", &self.fallback_buf)
+            .field("deferred_error", &self.deferred_error)
+            .finish()
     }
 }
 
