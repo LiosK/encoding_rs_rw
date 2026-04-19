@@ -131,7 +131,7 @@ impl<W: io::Write> EncodingWriter<DefaultBuffer<W>> {
         match unwritten {
             Ok(v) if v.is_empty() => {}
             Ok(v) => seq.push(Ok(v)),
-            Err(e) => seq.push(Err(io::Error::new(io::ErrorKind::Other, e))),
+            Err(e) => seq.push(Err(io::Error::other(e))),
         }
 
         if let Some(e) = iter {
@@ -589,10 +589,8 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
                             Some(t) => t,
                             None => {
                                 debug_assert!(false, "unreachable");
-                                self.io_error = Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    "encoder returned invalid string index",
-                                ));
+                                self.io_error =
+                                    Err(io::Error::other("encoder returned invalid string index"));
                                 return Err(fmt::Error);
                             }
                         }
@@ -618,7 +616,7 @@ fn write_fmt_impl(writer: &mut impl WriteFmtAdapter, f: fmt::Arguments<'_>) -> i
             if output.io_error.is_err() {
                 output.io_error
             } else {
-                Err(io::Error::new(io::ErrorKind::Other, "formatter error"))
+                Err(io::Error::other("formatter error"))
             }
         }
     }
@@ -822,9 +820,8 @@ mod tests {
 
         let mut writer = EncodingWriter::new(Vec::new(), encoding_rs::BIG5.new_encoder());
         {
-            let mut writer = writer.with_unmappable_handler(|_, _| {
-                Err(io::Error::new(io::ErrorKind::Other, AdHocError))
-            });
+            let mut writer =
+                writer.with_unmappable_handler(|_, _| Err(io::Error::other(AdHocError)));
             let ret = write!(writer, "Boo!👻 Boo!👻");
             writer.flush().unwrap();
             assert!(

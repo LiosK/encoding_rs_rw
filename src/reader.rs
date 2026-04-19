@@ -123,7 +123,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// assert!(reader.read_to_string(&mut dst).is_err());
     /// assert_eq!(dst, "hi");
     /// ```
-    pub fn unfused(&mut self) -> impl io::Read + '_ {
+    pub fn unfused(&mut self) -> impl io::Read {
         VariantReader::<'_, _, false, false> { inner: self }
     }
 
@@ -149,7 +149,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// assert_eq!(dst, "九�一生");
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn lossy(&mut self) -> impl io::Read + '_ {
+    pub fn lossy(&mut self) -> impl io::Read {
         VariantReader::<'_, _, true, true> { inner: self }
     }
 
@@ -182,7 +182,7 @@ impl<R: io::BufRead> DecodingReader<R> {
     /// assert_eq!(dst, "시�계�");
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn lossy_unfused(&mut self) -> impl io::Read + '_ {
+    pub fn lossy_unfused(&mut self) -> impl io::Read {
         VariantReader::<'_, _, true, false> { inner: self }
     }
 
@@ -408,10 +408,7 @@ fn read_to_string_impl(
     } else {
         ret?;
         debug_assert!(false, "unreachable");
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "failed to read to string unexpectedly",
-        ))
+        Err(io::Error::other("failed to read to string unexpectedly"))
     }
 }
 

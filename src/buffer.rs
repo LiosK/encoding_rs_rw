@@ -155,8 +155,7 @@ impl<W: io::Write> BufferedWrite for DefaultBuffer<W> {
         if self.unfilled().len() < size_hint.map_or(minimum, |n| n.max(minimum)) {
             self.flush_buffer()?;
             if self.unfilled().len() < minimum {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "failed to reserve minimum buffer capacity",
                 ));
             }

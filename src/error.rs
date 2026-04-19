@@ -166,10 +166,7 @@ mod tests {
             ))
             .is_some()
         );
-        assert!(
-            MalformedError::wrapped_in(&io::Error::new(io::ErrorKind::Other, MalformedError(())))
-                .is_some()
-        );
+        assert!(MalformedError::wrapped_in(&io::Error::other(MalformedError(()))).is_some());
 
         assert!(MalformedError::wrapped_in(&io::ErrorKind::InvalidData.into()).is_none());
         assert!(MalformedError::wrapped_in(&io::ErrorKind::Other.into()).is_none());
@@ -181,11 +178,8 @@ mod tests {
             .is_none()
         );
         assert!(
-            MalformedError::wrapped_in(&io::Error::new(
-                io::ErrorKind::Other,
-                "encountered a malformed byte sequence"
-            ))
-            .is_none()
+            MalformedError::wrapped_in(&io::Error::other("encountered a malformed byte sequence"))
+                .is_none()
         );
     }
 
@@ -198,13 +192,7 @@ mod tests {
             ))
             .is_some()
         );
-        assert!(
-            UnmappableError::wrapped_in(&io::Error::new(
-                io::ErrorKind::Other,
-                UnmappableError('.')
-            ))
-            .is_some()
-        );
+        assert!(UnmappableError::wrapped_in(&io::Error::other(UnmappableError('.'))).is_some());
 
         assert!(UnmappableError::wrapped_in(&io::ErrorKind::InvalidData.into()).is_none());
         assert!(UnmappableError::wrapped_in(&io::ErrorKind::Other.into()).is_none());
@@ -216,11 +204,8 @@ mod tests {
             .is_none()
         );
         assert!(
-            UnmappableError::wrapped_in(&io::Error::new(
-                io::ErrorKind::Other,
-                "encountered an unmappable character"
-            ))
-            .is_none()
+            UnmappableError::wrapped_in(&io::Error::other("encountered an unmappable character"))
+                .is_none()
         );
 
         assert_eq!(
@@ -233,12 +218,9 @@ mod tests {
             '.'
         );
         assert_eq!(
-            UnmappableError::wrapped_in(&io::Error::new(
-                io::ErrorKind::Other,
-                UnmappableError('.')
-            ))
-            .unwrap()
-            .value(),
+            UnmappableError::wrapped_in(&io::Error::other(UnmappableError('.')))
+                .unwrap()
+                .value(),
             '.'
         );
     }
