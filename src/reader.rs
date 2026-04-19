@@ -2,7 +2,7 @@ use std::{fmt, io, str};
 
 use encoding_rs::{Decoder, DecoderResult};
 
-use super::{util, MalformedError};
+use super::{MalformedError, util};
 
 /// A reader wrapper that decodes an input byte stream into UTF-8.
 ///

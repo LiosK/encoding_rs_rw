@@ -108,7 +108,9 @@ impl MalformedError {
 ///
 /// assert_eq!(
 ///     writer.writer_ref(),
-///     &[204, 183, b'&', b'#', b'1', b'2', b'8', b'1', b'6', b'5', b';', 189, 226]
+///     &[
+///         204, 183, b'&', b'#', b'1', b'2', b'8', b'1', b'6', b'5', b';', 189, 226
+///     ]
 /// );
 /// # Ok::<(), std::io::Error>(())
 /// ```
@@ -153,60 +155,73 @@ impl UnmappableError {
 
 #[cfg(test)]
 mod tests {
-    use super::{io, MalformedError, UnmappableError};
+    use super::{MalformedError, UnmappableError, io};
 
     #[test]
     fn unwrap_malformed_error() {
-        assert!(MalformedError::wrapped_in(&io::Error::new(
-            io::ErrorKind::InvalidData,
-            MalformedError(())
-        ))
-        .is_some());
-        assert!(MalformedError::wrapped_in(&io::Error::new(
-            io::ErrorKind::Other,
-            MalformedError(())
-        ))
-        .is_some());
+        assert!(
+            MalformedError::wrapped_in(&io::Error::new(
+                io::ErrorKind::InvalidData,
+                MalformedError(())
+            ))
+            .is_some()
+        );
+        assert!(
+            MalformedError::wrapped_in(&io::Error::new(io::ErrorKind::Other, MalformedError(())))
+                .is_some()
+        );
 
         assert!(MalformedError::wrapped_in(&io::ErrorKind::InvalidData.into()).is_none());
         assert!(MalformedError::wrapped_in(&io::ErrorKind::Other.into()).is_none());
-        assert!(MalformedError::wrapped_in(&io::Error::new(
-            io::ErrorKind::InvalidData,
-            "encountered a malformed byte sequence"
-        ))
-        .is_none());
-        assert!(MalformedError::wrapped_in(&io::Error::new(
-            io::ErrorKind::Other,
-            "encountered a malformed byte sequence"
-        ))
-        .is_none());
+        assert!(
+            MalformedError::wrapped_in(&io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encountered a malformed byte sequence"
+            ))
+            .is_none()
+        );
+        assert!(
+            MalformedError::wrapped_in(&io::Error::new(
+                io::ErrorKind::Other,
+                "encountered a malformed byte sequence"
+            ))
+            .is_none()
+        );
     }
 
     #[test]
     fn unwrap_unmappable_error() {
-        assert!(UnmappableError::wrapped_in(&io::Error::new(
-            io::ErrorKind::InvalidData,
-            UnmappableError('.')
-        ))
-        .is_some());
-        assert!(UnmappableError::wrapped_in(&io::Error::new(
-            io::ErrorKind::Other,
-            UnmappableError('.')
-        ))
-        .is_some());
+        assert!(
+            UnmappableError::wrapped_in(&io::Error::new(
+                io::ErrorKind::InvalidData,
+                UnmappableError('.')
+            ))
+            .is_some()
+        );
+        assert!(
+            UnmappableError::wrapped_in(&io::Error::new(
+                io::ErrorKind::Other,
+                UnmappableError('.')
+            ))
+            .is_some()
+        );
 
         assert!(UnmappableError::wrapped_in(&io::ErrorKind::InvalidData.into()).is_none());
         assert!(UnmappableError::wrapped_in(&io::ErrorKind::Other.into()).is_none());
-        assert!(UnmappableError::wrapped_in(&io::Error::new(
-            io::ErrorKind::InvalidData,
-            "encountered an unmappable character"
-        ))
-        .is_none());
-        assert!(UnmappableError::wrapped_in(&io::Error::new(
-            io::ErrorKind::Other,
-            "encountered an unmappable character"
-        ))
-        .is_none());
+        assert!(
+            UnmappableError::wrapped_in(&io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encountered an unmappable character"
+            ))
+            .is_none()
+        );
+        assert!(
+            UnmappableError::wrapped_in(&io::Error::new(
+                io::ErrorKind::Other,
+                "encountered an unmappable character"
+            ))
+            .is_none()
+        );
 
         assert_eq!(
             UnmappableError::wrapped_in(&io::Error::new(

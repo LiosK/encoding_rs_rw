@@ -2,7 +2,7 @@ use std::{fmt, io, str};
 
 use encoding_rs::Encoder;
 
-use super::{buffer::DefaultBuffer, util, MalformedError, UnmappableError};
+use super::{MalformedError, UnmappableError, buffer::DefaultBuffer, util};
 
 const MIN_BUF_SIZE: usize = 32;
 
@@ -801,12 +801,13 @@ mod tests {
             let mut writer = writer.with_unmappable_handler(|e, _| Err(e.wrap()));
             let ret = write!(writer, "Boo!👻 Boo!👻");
             writer.flush().unwrap();
-            assert!(ret
-                .unwrap_err()
-                .get_ref()
-                .unwrap()
-                .downcast_ref::<UnmappableError>()
-                .is_some());
+            assert!(
+                ret.unwrap_err()
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<UnmappableError>()
+                    .is_some()
+            );
         }
         assert_eq!(writer.writer_ref(), b"Boo!");
 
@@ -826,12 +827,13 @@ mod tests {
             });
             let ret = write!(writer, "Boo!👻 Boo!👻");
             writer.flush().unwrap();
-            assert!(ret
-                .unwrap_err()
-                .get_ref()
-                .unwrap()
-                .downcast_ref::<AdHocError>()
-                .is_some());
+            assert!(
+                ret.unwrap_err()
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<AdHocError>()
+                    .is_some()
+            );
         }
         assert_eq!(writer.writer_ref(), b"Boo!");
     }
