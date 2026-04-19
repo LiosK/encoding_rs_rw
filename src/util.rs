@@ -1,5 +1,3 @@
-use std::io;
-
 /// A `Vec`-like struct that handles a tiny stack-allocated byte array.
 #[derive(Debug, Default)]
 pub(crate) struct MiniBuffer {
@@ -48,19 +46,6 @@ impl MiniBuffer {
         buf[..n].copy_from_slice(&self.buf[..n]);
         self.remove_front(n);
         n
-    }
-
-    /// Writes as many bytes as possible pulled from a reader into the spare capacity.
-    pub fn fill_from_reader(&mut self, reader: &mut impl io::Read) -> io::Result<()> {
-        while !self.unfilled().is_empty() {
-            match reader.read(self.unfilled()) {
-                Ok(0) => break,
-                Ok(n) => self.advance(n),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
     }
 
     /// Writes as many bytes as possible copied from a slice into the spare capacity, returning the
