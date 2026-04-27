@@ -202,21 +202,15 @@ impl<R: io::BufRead> DecodingReader<R> {
                 // to keep this cold path simple even if `buf` has remaining space to read more
                 return Ok(self.fallback_buf.read_to_slice(buf));
             } else if let Some(e) = self.deferred_error.take() {
-                return if !LOSSY {
+                return if LOSSY {
+                    // write REPLACEMENT CHARACTER and return early because `self.reader.fill_buf()?`
+                    // called later may return `Err`
+                    self.fallback_buf.fill_from_slice("\u{FFFD}".as_bytes());
+                    Ok(self.fallback_buf.read_to_slice(buf))
+                } else {
                     // report the error that has been deferred until all the decoded bytes
                     // (including those left in the fallback buffer) are written
                     Err(e.wrap())
-                } else {
-                    // write REPLACEMENT CHARACTER and return early because `self.reader.fill_buf()?`
-                    // called later may return `Err`
-                    const REPL: &[u8] = "\u{FFFD}".as_bytes();
-                    if buf.len() >= REPL.len() {
-                        buf[..REPL.len()].copy_from_slice(REPL);
-                        Ok(REPL.len())
-                    } else {
-                        self.fallback_buf.fill_from_slice(REPL);
-                        Ok(self.fallback_buf.read_to_slice(buf))
-                    }
                 };
             } else if self.decoder.is_none() || buf.is_empty() {
                 // stop if decoder is already closed or if input buffer is empty
@@ -240,29 +234,19 @@ impl<R: io::BufRead> DecodingReader<R> {
                 self.decoder.as_mut().unwrap()
             };
 
-            let written = if !LOSSY {
-                let (result, consumed, written) =
-                    decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
-                        decoder.decode_to_utf8_without_replacement(src, dst, last)
-                    });
-                self.reader.consume(consumed);
-
-                if let DecoderResult::Malformed(..) = result {
-                    // defer error until subsequent call if some bytes were written successfully
-                    self.deferred_error = Some(MalformedError::new());
-                }
-
-                written
+            let (result, consumed, written) = if buf.len() > self.fallback_buf.unfilled().len() {
+                decode::<LOSSY>(decoder, src, buf, last)
             } else {
-                let (_, consumed, written) =
-                    decode_with_fallback_buf(buf, &mut self.fallback_buf, |dst| {
-                        let ret = decoder.decode_to_utf8(src, dst, last);
-                        (ret.0, ret.1, ret.2)
-                    });
-                self.reader.consume(consumed);
-
-                written
+                let ret = decode::<LOSSY>(decoder, src, self.fallback_buf.unfilled(), last);
+                self.fallback_buf.advance(ret.2);
+                (ret.0, ret.1, self.fallback_buf.read_to_slice(buf))
             };
+            self.reader.consume(consumed);
+
+            if let DecoderResult::Malformed(..) = result {
+                // defer error until subsequent call if some bytes were written successfully
+                self.deferred_error = Some(MalformedError::new());
+            }
 
             if written > 0 {
                 debug_assert!(self.check_utf8_guarantee(&buf[..written]).is_ok());
@@ -346,24 +330,25 @@ impl<R: io::BufRead, const LOSSY: bool, const FUSED: bool> io::Read
     }
 }
 
-/// Executes the specified decoder method but uses the fallback buffer if the destination buffer
-/// may be too small to call the decoder method.
-///
-/// This function assumes that the fallback buffer is empty.
-fn decode_with_fallback_buf<T>(
-    dst_buf: &mut [u8],
-    fallback_buf: &mut util::MiniBuffer,
-    mut decode: impl FnMut(&mut [u8]) -> (T, usize, usize),
-) -> (T, usize, usize) {
-    debug_assert!(fallback_buf.is_empty());
-    if dst_buf.len() > fallback_buf.unfilled().len() {
-        decode(dst_buf)
+fn decode<const LOSSY: bool>(
+    decoder: &mut Decoder,
+    src: &[u8],
+    dst: &mut [u8],
+    last: bool,
+) -> (DecoderResult, usize, usize) {
+    if !LOSSY {
+        decoder.decode_to_utf8_without_replacement(src, dst, last)
     } else {
-        let (result, consumed, written) = decode(fallback_buf.unfilled());
-        if written > 0 {
-            fallback_buf.advance(written);
-        }
-        (result, consumed, 0)
+        use encoding_rs::CoderResult::*;
+        let ret = decoder.decode_to_utf8(src, dst, last);
+        (
+            match ret.0 {
+                InputEmpty => DecoderResult::InputEmpty,
+                OutputFull => DecoderResult::OutputFull,
+            },
+            ret.1,
+            ret.2,
+        )
     }
 }
 
