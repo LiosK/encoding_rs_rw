@@ -19,7 +19,7 @@ use super::{MalformedError, util};
 /// This reader reports [`MalformedError`] when it encounters a malformed byte sequence in the
 /// input. This error is non-fatal, and the reader can continue to decode the subsequent bytes by
 /// calling any reader methods. See the documentation of [`MalformedError`] for how to resume while
-/// replacing the malformed bytes with replacement characters (U+FFED). See also [`lossy`] for a
+/// replacing the malformed bytes with replacement characters (U+FFFD). See also [`lossy`] for a
 /// variant of this reader that handles `MalformedError`s automatically.
 ///
 /// This wrapper terminates the decoder and stops pulling more bytes from the underlying reader

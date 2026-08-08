@@ -26,7 +26,7 @@
 //! and more flexible error semantics.
 //!
 //! This crate also provides a [`lossy`] variant of the decoding reader that replaces
-//! malformed byte sequences with replacement characters (U+FFED) and a
+//! malformed byte sequences with replacement characters (U+FFFD) and a
 //! [`with_unmappable_handler`] variant of writer that handles unmappable characters
 //! with the specified handler.
 //!
